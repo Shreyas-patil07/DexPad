@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const Store = require('electron-store');
-const { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom } = require('./win32-wallpaper.cjs');
+const { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom, activateWindow } = require('./win32-wallpaper.cjs');
 
 const store = new Store({
   name: 'dexpad',
@@ -13,6 +13,7 @@ const store = new Store({
     startup: true,
     wallpaperMode: true,
     interactive: true,
+    interactionConfigVersion: 2,
     authSecret: null
   }
 });
@@ -54,6 +55,18 @@ function getNodeExecutable() {
     if (systemNode) return systemNode;
   }
   return 'node';
+}
+
+function migrateInteractionConfig() {
+  const version = Number(store.get('interactionConfigVersion') || 0);
+  if (version < 2) {
+    // Older builds persisted interactive=false while experimenting with the
+    // WorkerW wallpaper surface. Start the upgraded build in an actually
+    // interactive state; the user can still toggle it off from the tray or
+    // Ctrl+Alt+D for click-through wallpaper mode.
+    store.set('interactive', true);
+    store.set('interactionConfigVersion', 2);
+  }
 }
 
 function createWorkspaceWindow() {
@@ -128,19 +141,20 @@ function applyWindowInputMode() {
   if (!desktopWindow || desktopWindow.isDestroyed()) return;
   const interactive = store.get('interactive');
 
-  // Interactive mode is a normal top-level window. Do not leave it parented to
-  // Explorer's WorkerW because Explorer can consume pointer activation first.
   if (interactive) {
     try {
       detachFromDesktop(desktopWindow);
     } catch (error) {
       console.warn('[DexPad] Failed to detach interactive window:', error);
     }
-    desktopWindow.setAlwaysOnTop(true, 'floating');
+
     desktopWindow.setIgnoreMouseEvents(false);
+    desktopWindow.setFocusable(true);
+    desktopWindow.setAlwaysOnTop(true, 'floating');
     setClickThrough(desktopWindow, false);
     desktopWindow.show();
     desktopWindow.focus();
+    activateWindow(desktopWindow);
     return;
   }
 
@@ -274,6 +288,7 @@ ipcMain.handle('dexpad:open-url', (_event, url) => {
 
 app.whenReady().then(() => {
   if (!app.requestSingleInstanceLock()) return quitApp();
+  migrateInteractionConfig();
   setStartup(store.get('startup'));
   globalShortcut.register('CommandOrControl+Alt+D', () => setInteractiveMode(!store.get('interactive')));
   createTray();
