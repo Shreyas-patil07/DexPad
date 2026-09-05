@@ -10,28 +10,16 @@
   <main class="panel">
     <div class="header">
       <div>
-        <div class="eyebrow">DESKTOP WORKSPACE</div>
+        <div class="eyebrow">LOCAL DESKTOP WORKSPACE</div>
         <h1>DexPad</h1>
-        <p>Ideon-powered desktop canvas.</p>
+        <p>Your workspace stays on this computer.</p>
       </div>
-      <button id="open" class="secondary">Open Control Window</button>
+      <button id="open" class="secondary">Open</button>
     </div>
-
-    <section>
-      <label for="url">Ideon URL</label>
-      <input id="url" type="url" placeholder="http://localhost:3000" />
-      <small>For development this should point to your local Ideon server. The packaged build can later bundle Ideon directly.</small>
-    </section>
 
     <section class="toggles">
       <label class="row"><span><strong>Start with Windows</strong><small>Launch DexPad when you sign in.</small></span><input id="startup" type="checkbox" /></label>
-      <label class="row"><span><strong>Desktop Wallpaper</strong><small>Attach the read-only canvas behind Windows desktop icons.</small></span><input id="wallpaper" type="checkbox" /></label>
-    </section>
-
-    <section>
-      <label><strong>Wallpaper Publisher</strong></label>
-      <small>Edit your workspace in the control window, then publish the latest saved workspace to the desktop wallpaper.</small>
-      <button id="publish" class="secondary">Publish Current Workspace</button>
+      <label class="row"><span><strong>Desktop Wallpaper</strong><small>Show your saved workspace behind the desktop icons.</small></span><input id="wallpaper" type="checkbox" /></label>
     </section>
 
     <div class="actions">
