@@ -25,6 +25,23 @@ execFileSync('corepack', ['pnpm', 'install', '--no-frozen-lockfile'], {
   shell: process.platform === 'win32'
 });
 
+// Upstream Ideon currently imports several packages that are not declared as
+// direct dependencies. Add them explicitly so a clean DexPad bootstrap can
+// type-check and build reliably with modern pnpm versions.
+execFileSync('corepack', [
+  'pnpm', 'add',
+  '@tiptap/core@3.31.3',
+  '@tiptap/pm@3.31.3',
+  'katex@^0.16.22',
+  'lodash@^4.18.1',
+  'prismjs@^1.30.0',
+  '@types/lodash@^4.17.20'
+], {
+  cwd: ideonDir,
+  stdio: 'inherit',
+  shell: process.platform === 'win32'
+});
+
 execFileSync('corepack', ['pnpm', 'build'], {
   cwd: ideonDir,
   stdio: 'inherit',
