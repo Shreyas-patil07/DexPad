@@ -203,14 +203,29 @@ a { color: inherit; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  /* Entry animation — uses only opacity/transform so it's GPU-only */
-  animation: card-appear 200ms var(--t-slow) both;
   will-change: transform;
+  /* No animation by default — only new cards get card--entering */
 }
 
-@keyframes card-appear {
-  from { opacity: 0; transform: scale(0.96) translateY(4px); }
-  to   { opacity: 1; transform: scale(1)    translateY(0);   }
+/* Entry animation — added by JS only when a card is newly created */
+.card--entering {
+  animation: card-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Exit animation — added by JS on delete */
+.card--removing {
+  animation: card-out 160ms ease forwards;
+  pointer-events: none;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: scale(0.95) translateY(6px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0); }
+}
+
+@keyframes card-out {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.94); }
 }
 
 /* Only enable resize handle in control mode */
@@ -427,7 +442,8 @@ body.wallpaper .card {
   box-shadow: 0 4px 20px rgba(0,0,0,0.25);
   background: rgba(14, 17, 22, 0.82);
   border-color: rgba(255, 255, 255, 0.1);
-  animation: none; /* no entry animation in wallpaper mode */
+  /* Never animate in wallpaper mode */
+  animation: none !important;
 }
 
 body.wallpaper .card-head { cursor: default; }
