@@ -49,6 +49,7 @@ runPnpm([
   '@tiptap/core@3.31.3',
   '@tiptap/pm@3.31.3',
   'classic-level@^1.4.1',
+  'esbuild@0.28.1',
   'katex@^0.16.22',
   'lodash@^4.18.1',
   'prismjs@^1.30.0',
@@ -134,7 +135,7 @@ if (providerImportLine.test(migrationsSource)) {
 fs.writeFileSync(migrationsFile, migrationsSource, 'utf8');
 console.log(`Ideon runtime migrations: compiled ${migrationFiles.length} files`);
 
-execFileSync(process.execPath, ['-e', "require.resolve('classic-level'); console.log('classic-level: OK')"], {
+execFileSync(process.execPath, ['-e', "require.resolve('classic-level'); require.resolve('esbuild'); console.log('runtime dependencies: OK')"], {
   cwd: ideonDir,
   stdio: 'inherit'
 });
