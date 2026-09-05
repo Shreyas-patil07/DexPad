@@ -4,24 +4,34 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>DexPad</title>
+  <!-- Inter from Google Fonts for consistent cross-machine typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="workspace.css" />
 </head>
 <body>
   <div id="app" class="app-shell">
     <header class="toolbar">
       <div class="brand">
-        <span class="brand-mark">D</span>
-        <div><strong>DexPad</strong><small id="mode-label">Local workspace</small></div>
+        <span class="brand-mark" aria-hidden="true">D</span>
+        <div>
+          <strong>DexPad</strong>
+          <small id="mode-label">Local workspace</small>
+        </div>
       </div>
-      <div id="controls" class="controls">
-        <button data-add="note">+ Note</button>
-        <button data-add="todo">+ Todo</button>
-        <button data-add="link">+ Link</button>
-        <button id="save" class="primary">Save</button>
+      <div id="controls" class="controls" role="toolbar" aria-label="Add cards">
+        <button type="button" data-add="note">+ Note</button>
+        <button type="button" data-add="todo">+ Todo</button>
+        <button type="button" data-add="link">+ Link</button>
+        <button type="button" id="save" class="primary">Save</button>
       </div>
     </header>
     <main id="canvas" class="canvas" aria-label="DexPad canvas"></main>
-    <div id="empty" class="empty-state"><strong>Your desktop, organized.</strong><span>Add notes, todos, and links. Everything is stored locally.</span></div>
+    <div id="empty" class="empty-state" aria-live="polite">
+      <strong>Your desktop, organized.</strong>
+      <span>Add notes, todos, and links. Everything is stored locally.</span>
+    </div>
   </div>
   <script src="workspace.js"></script>
 </body>

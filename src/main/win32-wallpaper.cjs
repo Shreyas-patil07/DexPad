@@ -54,6 +54,18 @@ function bufferToHwnd(buf) {
   return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
 }
 
+// koffi returns NULL HWNDs as a zero-filled Buffer, not as JS null.
+// This helper correctly treats a zero buffer (or number 0) as falsy.
+function isNullHwnd(hwnd) {
+  if (!hwnd) return true;
+  if (typeof hwnd === 'number') return hwnd === 0;
+  if (Buffer.isBuffer(hwnd)) {
+    for (const byte of hwnd) if (byte !== 0) return false;
+    return true;
+  }
+  return false;
+}
+
 function sendSpawnWorkerMessage(progman) {
   // Win11's raised-desktop shell responds to 0x0D/0x01 by creating the
   // wallpaper WorkerW child under Progman. Keep the older variants as fallbacks.
@@ -70,7 +82,7 @@ function sendSpawnWorkerMessage(progman) {
 
 function findWorkerW() {
   const progman = FindWindowW('Progman', null);
-  if (!progman) throw new Error('Progman window not found.');
+  if (isNullHwnd(progman)) throw new Error('Progman window not found.');
   sendSpawnWorkerMessage(progman);
 
   // Windows 11 raised-desktop: the wallpaper WorkerW is a direct child of
@@ -79,8 +91,8 @@ function findWorkerW() {
   let childAfter = null;
   while (true) {
     const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
-    if (!next) break;
-    if (!FindWindowExW(next, null, 'SHELLDLL_DefView', null)) {
+    if (isNullHwnd(next)) break;
+    if (isNullHwnd(FindWindowExW(next, null, 'SHELLDLL_DefView', null))) {
       directWorker = next;
       break;
     }
@@ -92,7 +104,7 @@ function findWorkerW() {
   // and use the following WorkerW sibling.
   let shellViewParent = null;
   const cb = koffi.register((hwnd) => {
-    if (FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
+    if (!isNullHwnd(FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null))) {
       shellViewParent = hwnd;
       return 0;
     }
@@ -110,11 +122,11 @@ function findWorkerW() {
   }
 
   const siblingWorker = FindWindowExW(null, shellViewParent, 'WorkerW', null);
-  if (siblingWorker) return siblingWorker;
+  if (!isNullHwnd(siblingWorker)) return siblingWorker;
 
   let candidate = null;
   const fallbackCb = koffi.register((hwnd) => {
-    if (!FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
+    if (isNullHwnd(FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null))) {
       candidate = hwnd;
       return 0;
     }

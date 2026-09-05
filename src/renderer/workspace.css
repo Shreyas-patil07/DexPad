@@ -1,6 +1,427 @@
-:root{color-scheme:dark;font-family:Inter,Segoe UI,sans-serif;color:#eef2f7;background:#090b0e}*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{background:radial-gradient(circle at 80% 15%,#18202a 0,#090b0e 44%,#070809 100%)}button,input,textarea{font:inherit}.app-shell{position:relative;width:100%;height:100%;overflow:hidden}.toolbar{height:66px;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.08);background:rgba(9,11,14,.88);backdrop-filter:blur(16px);position:relative;z-index:20}.brand{display:flex;align-items:center;gap:10px;min-width:0}.brand-mark{width:34px;height:34px;display:grid;place-items:center;border-radius:10px;background:#f4f7fb;color:#0a0c10;font-weight:800}.brand strong{display:block;font-size:14px}.brand small{display:block;margin-top:2px;color:#8893a0;font-size:10px}.controls{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}.controls button{border:1px solid rgba(255,255,255,.1);border-radius:9px;padding:8px 11px;background:#141820;color:#eef2f7;cursor:pointer}.controls button.primary{background:#f4f7fb;color:#0a0c10;border-color:#f4f7fb}.canvas{position:absolute;inset:66px 0 0;overflow:auto;background-image:linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:32px 32px}.card{position:absolute;min-width:220px;min-height:140px;border:1px solid rgba(255,255,255,.1);border-radius:16px;background:rgba(15,18,23,.94);box-shadow:0 18px 50px rgba(0,0,0,.28);overflow:hidden}.card-head{height:38px;display:flex;align-items:center;gap:8px;padding:7px 9px;background:rgba(255,255,255,.025);cursor:grab;border-bottom:1px solid rgba(255,255,255,.06);user-select:none}.card-head:active{cursor:grabbing}.type{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#8893a0}.delete{margin-left:auto;border:0;background:transparent;color:#7f8a96;cursor:pointer;font-size:16px}.card-body{padding:12px}.title-input,.body-input,.url-input{width:100%;border:1px solid rgba(255,255,255,.08);border-radius:9px;background:#0e1116;color:#eef2f7;outline:none}.title-input{padding:8px 9px;font-weight:650}.body-input{margin-top:9px;min-height:100px;padding:9px;resize:none}.url-input{margin-top:9px;padding:8px 9px}.todo-row{display:flex;align-items:flex-start;gap:9px}.todo-row input[type=checkbox]{margin-top:4px;width:17px;height:17px}.todo-row .title-input{flex:1}.link-open{display:inline-flex;margin-top:10px;color:#d9e4ff;text-decoration:none}.empty-state{position:absolute;left:50%;top:52%;transform:translate(-50%,-50%);display:flex;flex-direction:column;gap:7px;text-align:center;color:#7f8995;pointer-events:none}.empty-state strong{font-size:18px;color:#cdd5de}.empty-state span{font-size:12px}
+/* ────────────────────────────────────────────────────────────────────────────
+   DexPad — workspace.css
+   All lengths use multiples of 4px. Colors use HSL-derived palettes.
+   GPU-accelerated animations use transform/opacity only (no layout props).
+──────────────────────────────────────────────────────────────────────────── */
 
-/* Wallpaper mode: full display is transparent; only the DexPad panel is opaque. */
-html:has(body.wallpaper),body.wallpaper{background:transparent!important}.wallpaper .app-shell{background:transparent!important}.wallpaper .toolbar,.wallpaper .empty-state{display:none}.wallpaper .controls{display:none}.wallpaper .canvas{inset:auto 0 auto auto;width:min(720px,42vw);height:min(760px,82vh);top:50%;right:0;transform:translateY(-50%);overflow:hidden;background:#0b0d10;background-image:none;box-shadow:0 18px 60px rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.06);border-right:0;border-radius:18px 0 0 18px}.wallpaper .card{box-shadow:none;background:rgba(15,18,23,.72);border-color:rgba(255,255,255,.14)}.wallpaper .card-head{cursor:default;background:rgba(255,255,255,.025)}.wallpaper .card-body{padding:12px}.wallpaper .delete{display:none}.wallpaper input,.wallpaper textarea{border-color:transparent;background:transparent;color:#eef2f7;pointer-events:none}.wallpaper .link-open{color:#d9e4ff;pointer-events:none}
+/* ── Design tokens ──────────────────────────────────────────────────────── */
+:root {
+  color-scheme: dark;
 
-body:not(.wallpaper) .card{resize:both}.body-input{height:100%;min-height:100px;max-height:420px}
+  /* Typography */
+  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+
+  /* Palette */
+  --c-bg:          #090b0e;
+  --c-bg-raised:   #0e1116;
+  --c-bg-card:     rgba(15, 18, 23, 0.94);
+  --c-bg-head:     rgba(255, 255, 255, 0.025);
+  --c-bg-toolbar:  rgba(9, 11, 14, 0.88);
+  --c-border:      rgba(255, 255, 255, 0.1);
+  --c-border-soft: rgba(255, 255, 255, 0.06);
+  --c-text:        #eef2f7;
+  --c-text-muted:  #8893a0;
+  --c-accent:      #f4f7fb;
+  --c-link:        #d9e4ff;
+
+  /* Radii */
+  --r-card: 16px;
+  --r-input: 9px;
+  --r-btn: 9px;
+  --r-brand: 10px;
+
+  /* Transitions (GPU-friendly: only opacity/transform/color/border-color) */
+  --t-fast: 120ms ease;
+  --t-base: 200ms ease;
+}
+
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  color: var(--c-text);
+  background: var(--c-bg);
+}
+
+body {
+  background: radial-gradient(circle at 80% 15%, #18202a 0%, #090b0e 44%, #070809 100%);
+}
+
+button, input, textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* ── App shell ──────────────────────────────────────────────────────────── */
+.app-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+.toolbar {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--c-border);
+  background: var(--c-bg-toolbar);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  position: relative;
+  z-index: 20;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--r-brand);
+  background: var(--c-accent);
+  color: #0a0c10;
+  font-weight: 800;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.brand strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.brand small {
+  display: block;
+  margin-top: 1px;
+  color: var(--c-text-muted);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+/* ── Toolbar buttons ────────────────────────────────────────────────────── */
+.controls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.controls button {
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-btn);
+  padding: 6px 12px;
+  background: #141820;
+  color: var(--c-text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--t-fast), border-color var(--t-fast), opacity var(--t-fast);
+}
+
+.controls button:hover {
+  background: #1c2230;
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.controls button:active {
+  opacity: 0.7;
+}
+
+.controls button.primary {
+  background: var(--c-accent);
+  color: #0a0c10;
+  border-color: var(--c-accent);
+  font-weight: 600;
+}
+
+.controls button.primary:hover {
+  background: #dce5f0;
+  border-color: #dce5f0;
+}
+
+/* ── Canvas ─────────────────────────────────────────────────────────────── */
+.canvas {
+  position: absolute;
+  inset: 56px 0 0 0;
+  overflow: auto;
+  /* Subtle dot grid for depth without being distracting */
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ── Cards ──────────────────────────────────────────────────────────────── */
+.card {
+  position: absolute;
+  min-width: 220px;
+  min-height: 140px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-card);
+  background: var(--c-bg-card);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  /* Smooth appearance on first render */
+  animation: card-in 180ms ease both;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+body:not(.wallpaper) .card {
+  /* Let the user resize cards by dragging the bottom-right corner */
+  resize: both;
+}
+
+.card-head {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--c-bg-head);
+  cursor: grab;
+  border-bottom: 1px solid var(--c-border-soft);
+  /* Prevent text selection during drag */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.card-head:active {
+  cursor: grabbing;
+}
+
+.type {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--c-text-muted);
+  font-weight: 600;
+}
+
+.delete {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: color var(--t-fast), background var(--t-fast);
+}
+
+.delete:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.12);
+}
+
+/* ── Card body ──────────────────────────────────────────────────────────── */
+.card-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  height: calc(100% - 36px);
+}
+
+/* ── Inputs ─────────────────────────────────────────────────────────────── */
+.title-input,
+.body-input,
+.url-input {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--r-input);
+  background: var(--c-bg-raised);
+  color: var(--c-text);
+  outline: none;
+  transition: border-color var(--t-fast), background var(--t-fast);
+}
+
+.title-input:focus,
+.body-input:focus,
+.url-input:focus {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: #111520;
+}
+
+.title-input {
+  padding: 7px 10px;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.body-input {
+  margin-top: 8px;
+  padding: 9px;
+  resize: none;
+  flex: 1;
+  min-height: 80px;
+  max-height: 420px;
+  height: 100%;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.url-input {
+  margin-top: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+}
+
+/* ── Todo row ───────────────────────────────────────────────────────────── */
+.todo-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.todo-row input[type="checkbox"] {
+  margin-top: 6px;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--c-accent);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.todo-row .title-input {
+  flex: 1;
+}
+
+/* ── Link card ──────────────────────────────────────────────────────────── */
+.link-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--c-link);
+  text-decoration: none;
+  opacity: 0.85;
+  transition: opacity var(--t-fast);
+}
+
+.link-open:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty-state {
+  position: absolute;
+  left: 50%;
+  top: 52%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+  color: #7f8995;
+  pointer-events: none;
+}
+
+.empty-state strong {
+  font-size: 17px;
+  color: #cdd5de;
+  font-weight: 600;
+}
+
+.empty-state span {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ────────────────────────────────────────────────────────────────────────────
+   Wallpaper mode overrides
+   In this mode the entire Electron window is transparent and full-screen.
+   Only the DexPad panel (right-aligned) is visible.
+──────────────────────────────────────────────────────────────────────────── */
+
+html:has(body.wallpaper),
+body.wallpaper {
+  background: transparent !important;
+}
+
+.wallpaper .app-shell {
+  background: transparent !important;
+}
+
+.wallpaper .toolbar,
+.wallpaper .empty-state,
+.wallpaper .controls {
+  display: none;
+}
+
+.wallpaper .canvas {
+  /* Position the panel flush to the right edge of the screen */
+  position: fixed;
+  inset: auto;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: min(720px, 42vw);
+  height: min(760px, 82vh);
+  overflow: hidden;
+  background: #0b0d10;
+  background-image: none;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-right: none;
+  border-radius: 18px 0 0 18px;
+}
+
+.wallpaper .card {
+  box-shadow: none;
+  background: rgba(15, 18, 23, 0.72);
+  border-color: rgba(255, 255, 255, 0.14);
+  /* No entry animation in wallpaper mode — reduces visual noise */
+  animation: none;
+}
+
+.wallpaper .card-head {
+  cursor: default;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.wallpaper .delete {
+  display: none;
+}
+
+.wallpaper input,
+.wallpaper textarea {
+  border-color: transparent;
+  background: transparent;
+  color: var(--c-text);
+  /* Inputs are display-only in wallpaper mode */
+  pointer-events: none;
+  cursor: default;
+}
+
+.wallpaper .link-open {
+  color: var(--c-link);
+  pointer-events: none;
+}
