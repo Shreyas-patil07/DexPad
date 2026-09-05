@@ -1,0 +1,7 @@
+node_modules/
+out/
+forge-*-publish/
+.env
+vendor/ideon/
+.DS_Store
+Thumbs.db
