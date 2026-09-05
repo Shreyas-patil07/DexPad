@@ -31,7 +31,27 @@ function uid() {
 }
 
 function isValidUrl(str) {
-  return typeof str === 'string' && /^https?:\/\//i.test(str);
+  if (typeof str !== 'string' || !str.trim()) return false;
+  try {
+    const p = new URL(str);
+    return p.protocol === 'http:' || p.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+function getMaxZIndex() {
+  return cards.reduce((max, c) => Math.max(max, Number(c.zIndex) || 1), 1);
+}
+
+function bringToFront(card, el) {
+  if (WALLPAPER) return;
+  const maxZ = getMaxZIndex() + 1;
+  if (card.zIndex !== maxZ) {
+    card.zIndex = maxZ;
+    if (el) el.style.zIndex = String(maxZ);
+    scheduleSave();
+  }
 }
 
 // ─── New card defaults ────────────────────────────────────────────────────────
@@ -39,33 +59,39 @@ function newCard(type) {
   const col = cards.length % 2;
   const row = Math.floor(cards.length / 2);
   return {
-    id: uid(), type,
+    id: uid(),
+    type,
     title: type === 'note' ? 'New note' : type === 'todo' ? 'New task' : 'New link',
-    body: '', url: type === 'link' ? 'https://' : '',
+    body: '',
+    url: type === 'link' ? 'https://' : '',
     done: false,
     x: 20 + col * 340,
     y: 20 + row * 220,
     width: 300,
-    height: type === 'note' ? 200 : 165
+    height: type === 'note' ? 200 : 165,
+    zIndex: getMaxZIndex() + 1
   };
 }
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
+// 300ms debounce for text input; immediate flush for structure changes
 function scheduleSave() {
   if (WALLPAPER) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(flushSave, 600);
+  saveTimer = setTimeout(flushSave, 300);
 }
 
 async function flushSave() {
   if (WALLPAPER) return;
   clearTimeout(saveTimer);
+  saveTimer = null;
   try {
-    // Merge the normalised result back without re-rendering
     const saved = await window.dexpad.saveCards(cards);
-    for (const s of saved) {
-      const local = cards.find((c) => c.id === s.id);
-      if (local) Object.assign(local, s);
+    if (Array.isArray(saved)) {
+      for (const s of saved) {
+        const local = cards.find((c) => c.id === s.id);
+        if (local) Object.assign(local, s);
+      }
     }
   } catch (err) {
     console.error('[DexPad] Save failed:', err);
@@ -115,6 +141,9 @@ function buildCard(card) {
   el.dataset.id = card.id;
   positionCard(el, card);
 
+  // Elevate card to front when clicked or focused
+  el.addEventListener('mousedown', () => bringToFront(card, el));
+
   // ── Header ──
   const head = document.createElement('div');
   head.className = 'card-head';
@@ -138,8 +167,8 @@ function buildCard(card) {
       el.addEventListener('animationend', () => {
         el.remove();
         cards = cards.filter((c) => c.id !== card.id);
-        scheduleSave();
         updateEmptyState();
+        flushSave(); // Immediate persist on delete
       }, { once: true });
     });
     head.appendChild(delBtn);
@@ -158,7 +187,10 @@ function buildCard(card) {
     const cb = document.createElement('input');
     cb.type = 'checkbox'; cb.checked = card.done; cb.disabled = WALLPAPER;
     cb.dataset.field = 'done';
-    cb.addEventListener('change', () => patchCard(card.id, { done: cb.checked }));
+    cb.addEventListener('change', () => {
+      patchCard(card.id, { done: cb.checked });
+      flushSave(); // Immediate persist on todo toggle
+    });
 
     const titleIn = makeInput('text', card.title, 'title-input', 'Task description', 'title');
     titleIn.addEventListener('input', () => patchCard(card.id, { title: titleIn.value }));
@@ -179,6 +211,7 @@ function buildCard(card) {
       ta.disabled    = WALLPAPER;
       ta.dataset.field = 'body';
       ta.addEventListener('input', () => patchCard(card.id, { body: ta.value }));
+      ta.addEventListener('blur', () => flushSave());
       body.appendChild(ta);
     } else {
       const urlIn = makeInput('url', card.url, 'url-input', 'https://example.com', 'url');
@@ -214,13 +247,15 @@ function makeInput(type, value, className, placeholder, field) {
   el.value = value; el.placeholder = placeholder;
   el.disabled = WALLPAPER;
   if (field) el.dataset.field = field;
+  el.addEventListener('blur', () => flushSave());
   return el;
 }
 
 function positionCard(el, card) {
-  el.style.left  = `${card.x}px`;
-  el.style.top   = `${card.y}px`;
-  el.style.width = `${card.width}px`;
+  el.style.left    = `${card.x}px`;
+  el.style.top     = `${card.y}px`;
+  el.style.width   = `${card.width}px`;
+  el.style.zIndex  = String(card.zIndex || 1);
   if (!WALLPAPER) el.style.height = `${card.height}px`;
 }
 
@@ -249,8 +284,10 @@ function reconcile() {
   for (const card of cards) {
     const existing = domMap.get(card.id);
     if (existing) {
-      // Update position/size in-place
-      positionCard(existing, card);
+      // Update position/size in-place (skip during active drag)
+      if (!drag || drag.card.id !== card.id) {
+        positionCard(existing, card);
+      }
       // Patch input values ONLY for inputs that don't have focus
       // (never overwrite what the user is currently typing)
       syncInputs(existing, card);
@@ -302,6 +339,7 @@ function startDrag(e, card, el) {
   if (e.button !== 0 || WALLPAPER) return;
   if (e.target.closest('button,input,textarea,a,label')) return;
   e.preventDefault();
+  bringToFront(card, el);
   drag = { card, el, startX: e.clientX, startY: e.clientY, origX: card.x, origY: card.y };
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup',   onUp,     { once: true });
@@ -320,7 +358,7 @@ function onUp() {
   if (!drag) return;
   window.removeEventListener('mousemove', onMove);
   window.removeEventListener('blur',      onCancel);
-  scheduleSave();
+  flushSave(); // Persist final coordinates immediately upon drop
   drag = null;
 }
 
@@ -344,12 +382,17 @@ if (controls && !WALLPAPER) {
       const el = buildCard(card);
       el.classList.add('card--entering');
       canvas.appendChild(el);
-      scheduleSave();
       updateEmptyState();
+      flushSave(); // Immediate persist on new card creation
     }
     if (e.target.id === 'btn-save') flushSave();
   });
 }
+
+// Ensure unsaved input buffers are flushed before window unloads
+window.addEventListener('beforeunload', () => {
+  flushSave();
+});
 
 // ─── Main process state push ──────────────────────────────────────────────────
 // Uses reconcile() — NOT fullRender() — so existing cards are never destroyed
