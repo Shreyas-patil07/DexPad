@@ -75,21 +75,30 @@ if (!migrationFiles.length) {
 fs.rmSync(runtimeMigrationsDir, { recursive: true, force: true });
 fs.mkdirSync(runtimeMigrationsDir, { recursive: true });
 
-// Build each migration as an independent CJS module so Kysely can load them
-// at runtime without depending on the TypeScript source tree.
-const esbuildArgs = [
-  'exec', 'esbuild',
-  ...migrationFiles.map((name) => path.join(migrationsSourceDir, name)),
-  `--outdir=${runtimeMigrationsDir}`,
-  '--bundle',
-  '--platform=node',
-  '--format=cjs',
-  '--target=node20',
-  '--out-extension:.js=.cjs',
-  '--log-level=warning',
-  `--tsconfig=${path.join(ideonDir, 'tsconfig.json')}`
-];
-runPnpm(esbuildArgs);
+// Build each migration as an independent CommonJS module. We deliberately use
+// explicit --outfile invocations below because esbuild's multi-entry outdir
+// naming can vary with TypeScript entrypoints and produced extensions across
+// versions. Explicit output paths make the runtime contract deterministic.
+for (const name of migrationFiles) {
+  const sourceFile = path.join(migrationsSourceDir, name);
+  const outputFile = path.join(runtimeMigrationsDir, `${path.basename(name, '.ts')}.cjs`);
+  runPnpm([
+    'exec', 'esbuild',
+    sourceFile,
+    `--outfile=${outputFile}`,
+    '--bundle',
+    '--platform=node',
+    '--format=cjs',
+    '--target=node20',
+    '--sourcemap=external',
+    '--log-level=warning',
+    `--tsconfig=${path.join(ideonDir, 'tsconfig.json')}`
+  ]);
+
+  if (!fs.existsSync(outputFile)) {
+    throw new Error(`[DexPad] Migration compilation did not create expected file: ${outputFile}`);
+  }
+}
 
 let migrationsSource = fs.readFileSync(migrationsFile, 'utf8');
 const migrationFolderLine = /^\s*migrationFolder\s*:\s*.+?,\s*$/m;
@@ -101,8 +110,8 @@ if (!migrationFolderLine.test(migrationsSource)) {
 
 migrationsSource = migrationsSource.replace(migrationFolderLine, migrationFolderReplacement);
 
-// On Windows, Node's ESM loader rejects a raw C:\... path. Convert the path
-// to a file URL before importing the compiled .cjs migration module.
+// Kysely's FileMigrationProvider passes Windows filesystem paths to its custom
+// importer. Convert those paths to file:// URLs before dynamic import().
 const providerImportLine = /\s*import:\s*\([^\n]+=>\s*[^\n]+,?\r?\n?/;
 const desiredImportLine = '      import: (modulePath) => import(require("node:url").pathToFileURL(modulePath).href),';
 
