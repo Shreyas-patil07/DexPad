@@ -63,9 +63,20 @@ const PRELOAD = path.join(__dirname, '../preload/preload.cjs');
 
 // ─── Geometry helpers ─────────────────────────────────────────────────────────
 
+/** Determine the most appropriate display (display nearest user cursor, or primary). */
+function getTargetDisplay() {
+  try {
+    const pt = screen.getCursorScreenPoint();
+    const d = screen.getDisplayNearestPoint(pt);
+    if (d) return d;
+  } catch (_) {}
+  return screen.getPrimaryDisplay();
+}
+
 /** Bounds for the floating control-mode panel (right edge, vertically centred). */
-function controlBounds() {
-  const wa = screen.getPrimaryDisplay().workArea;
+function controlBounds(targetDisplay = null) {
+  const d  = targetDisplay || getTargetDisplay();
+  const wa = d.workArea;
   const w  = Math.min(740, Math.round(wa.width  * 0.42));
   const h  = Math.min(780, Math.round(wa.height * 0.88));
   return { x: wa.x + wa.width - w, y: wa.y + Math.round((wa.height - h) / 2), width: w, height: h };
@@ -74,10 +85,10 @@ function controlBounds() {
 /**
  * Bounds for the wallpaper-mode window.
  * KEY CHANGE: the window is PANEL-SIZED, not full-screen.
- * This eliminates cropping — the window IS the panel, no CSS magic needed.
+ * Accommodates display offset and resolution on multi-monitor setups.
  */
-function wallpaperPanelBounds() {
-  const d  = screen.getPrimaryDisplay();
+function wallpaperPanelBounds(targetDisplay = null) {
+  const d  = targetDisplay || screen.getPrimaryDisplay();
   const w  = Math.min(740, Math.round(d.bounds.width  * 0.42));
   const h  = Math.min(780, Math.round(d.bounds.height * 0.88));
   return {
@@ -118,13 +129,21 @@ function publishState(excludeSender = null) {
 
 // ─── Card persistence ─────────────────────────────────────────────────────────
 
+let saveQueue = Promise.resolve();
+
 function saveCards(cards, excludeSender = null) {
-  const normalized = Array.isArray(cards)
-    ? cards.map((c, i) => normalizeCard(c, i)).filter(Boolean)
-    : [];
-  store.set('cards', normalized);
-  publishState(excludeSender);
-  return normalized;
+  saveQueue = saveQueue.then(() => {
+    const normalized = Array.isArray(cards)
+      ? cards.map((c, i) => normalizeCard(c, i)).filter(Boolean)
+      : [];
+    store.set('cards', normalized);
+    publishState(excludeSender);
+    return normalized;
+  }).catch((err) => {
+    console.error('[DexPad] saveCards error in queue:', err);
+    return [];
+  });
+  return saveQueue;
 }
 
 // ─── Startup registration ─────────────────────────────────────────────────────

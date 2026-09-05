@@ -75,6 +75,9 @@ function newCard(type) {
 
 // ─── Persistence ──────────────────────────────────────────────────────────────
 // 300ms debounce for text input; immediate flush for structure changes
+let isSaving = false;
+let savePending = false;
+
 function scheduleSave() {
   if (WALLPAPER) return;
   clearTimeout(saveTimer);
@@ -85,6 +88,11 @@ async function flushSave() {
   if (WALLPAPER) return;
   clearTimeout(saveTimer);
   saveTimer = null;
+  if (isSaving) {
+    savePending = true;
+    return;
+  }
+  isSaving = true;
   try {
     const saved = await window.dexpad.saveCards(cards);
     if (Array.isArray(saved)) {
@@ -95,6 +103,12 @@ async function flushSave() {
     }
   } catch (err) {
     console.error('[DexPad] Save failed:', err);
+  } finally {
+    isSaving = false;
+    if (savePending) {
+      savePending = false;
+      flushSave();
+    }
   }
 }
 
