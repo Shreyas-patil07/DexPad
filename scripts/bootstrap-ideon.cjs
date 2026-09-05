@@ -72,34 +72,6 @@ if (!migrationFiles.length) {
   throw new Error('[DexPad] No Ideon migration files were found.');
 }
 
-fs.rmSync(runtimeMigrationsDir, { recursive: true, force: true });
-fs.mkdirSync(runtimeMigrationsDir, { recursive: true });
-
-// Build each migration as an independent CommonJS module. We deliberately use
-// explicit --outfile invocations below because esbuild's multi-entry outdir
-// naming can vary with TypeScript entrypoints and produced extensions across
-// versions. Explicit output paths make the runtime contract deterministic.
-for (const name of migrationFiles) {
-  const sourceFile = path.join(migrationsSourceDir, name);
-  const outputFile = path.join(runtimeMigrationsDir, `${path.basename(name, '.ts')}.cjs`);
-  runPnpm([
-    'exec', 'esbuild',
-    sourceFile,
-    `--outfile=${outputFile}`,
-    '--bundle',
-    '--platform=node',
-    '--format=cjs',
-    '--target=node20',
-    '--sourcemap=external',
-    '--log-level=warning',
-    `--tsconfig=${path.join(ideonDir, 'tsconfig.json')}`
-  ]);
-
-  if (!fs.existsSync(outputFile)) {
-    throw new Error(`[DexPad] Migration compilation did not create expected file: ${outputFile}`);
-  }
-}
-
 let migrationsSource = fs.readFileSync(migrationsFile, 'utf8');
 const migrationFolderLine = /^\s*migrationFolder\s*:\s*.+?,\s*$/m;
 const migrationFolderReplacement = '      migrationFolder: path.join(process.cwd(), "runtime-migrations"),';
@@ -125,11 +97,51 @@ if (providerImportLine.test(migrationsSource)) {
 }
 
 fs.writeFileSync(migrationsFile, migrationsSource, 'utf8');
-console.log(`Ideon runtime migrations: compiled ${migrationFiles.length} files`);
 
-runPnpm(['exec', 'node', '-e', "require.resolve('classic-level'); require.resolve('esbuild'); console.log('runtime dependencies: OK')"]);
-
+// Build the application first. The upstream build tools clean their own output
+// directories; generating runtime-migrations after the build prevents any build
+// step from accidentally removing the migration modules we need at runtime.
 runPnpm(['build']);
 
+fs.rmSync(runtimeMigrationsDir, { recursive: true, force: true });
+fs.mkdirSync(runtimeMigrationsDir, { recursive: true });
+
+// Build each migration as an independent CommonJS module using an explicit
+// output file. This guarantees the exact filenames used by FileMigrationProvider.
+for (const name of migrationFiles) {
+  const sourceFile = path.join(migrationsSourceDir, name);
+  const outputFile = path.join(runtimeMigrationsDir, `${path.basename(name, '.ts')}.cjs`);
+
+  runPnpm([
+    'exec', 'esbuild',
+    sourceFile,
+    `--outfile=${outputFile}`,
+    '--bundle',
+    '--platform=node',
+    '--format=cjs',
+    '--target=node20',
+    '--sourcemap=external',
+    '--log-level=warning',
+    `--tsconfig=${path.join(ideonDir, 'tsconfig.json')}`
+  ]);
+
+  if (!fs.existsSync(outputFile)) {
+    throw new Error(`[DexPad] Migration compilation did not create expected file: ${outputFile}`);
+  }
+}
+
+const generatedMigrations = fs
+  .readdirSync(runtimeMigrationsDir)
+  .filter((name) => name.endsWith('.cjs'))
+  .sort();
+
+if (generatedMigrations.length !== migrationFiles.length) {
+  throw new Error(
+    `[DexPad] Expected ${migrationFiles.length} compiled migrations, found ${generatedMigrations.length}.`
+  );
+}
+
+console.log(`Ideon runtime migrations: compiled ${generatedMigrations.length} files`);
+runPnpm(['exec', 'node', '-e', "require.resolve('classic-level'); require.resolve('esbuild'); console.log('runtime dependencies: OK')"]);
 console.log('\nIdeon is ready. Start DexPad with: npm run dev');
 console.log(`IDEON_ROOT=${ideonDir}`);
