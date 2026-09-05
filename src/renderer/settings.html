@@ -14,7 +14,7 @@
         <h1>DexPad</h1>
         <p>Ideon-powered desktop canvas.</p>
       </div>
-      <button id="open" class="secondary">Open</button>
+      <button id="open" class="secondary">Open Control Window</button>
     </div>
 
     <section>
@@ -25,8 +25,13 @@
 
     <section class="toggles">
       <label class="row"><span><strong>Start with Windows</strong><small>Launch DexPad when you sign in.</small></span><input id="startup" type="checkbox" /></label>
-      <label class="row"><span><strong>Desktop Wallpaper</strong><small>Attach the canvas behind Windows desktop icons.</small></span><input id="wallpaper" type="checkbox" /></label>
-      <label class="row"><span><strong>Interactive Mode</strong><small>Ctrl + Alt + D toggles mouse interaction.</small></span><input id="interactive" type="checkbox" /></label>
+      <label class="row"><span><strong>Desktop Wallpaper</strong><small>Attach the read-only canvas behind Windows desktop icons.</small></span><input id="wallpaper" type="checkbox" /></label>
+    </section>
+
+    <section>
+      <label><strong>Wallpaper Publisher</strong></label>
+      <small>Edit your workspace in the control window, then publish the latest saved workspace to the desktop wallpaper.</small>
+      <button id="publish" class="secondary">Publish Current Workspace</button>
     </section>
 
     <div class="actions">
