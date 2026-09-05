@@ -14,6 +14,8 @@ const FindWindowW       = user32.func('__stdcall', 'FindWindowW',       'void *'
 const FindWindowExW     = user32.func('__stdcall', 'FindWindowExW',     'void *',   ['void *', 'void *', 'str16', 'str16']);
 const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', ['void *', 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
 const SetParent         = user32.func('__stdcall', 'SetParent',         'void *',   ['void *', 'void *']);
+const GetParent         = user32.func('__stdcall', 'GetParent',         'void *',   ['void *']);
+const IsWindow          = user32.func('__stdcall', 'IsWindow',          'int32',    ['void *']);
 const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', ['void *', 'int32', 'intptr_t']);
 const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_t', ['void *', 'int32']);
 const SetWindowPos      = user32.func('__stdcall', 'SetWindowPos',      'int32',    ['void *', 'void *', 'int32', 'int32', 'int32', 'int32', 'uint32']);
@@ -229,13 +231,25 @@ function setClickThrough(browserWindow, enabled) {
 }
 
 /**
- * Push the window to the bottom of the z-order so desktop icons remain on top.
+ * Check if the browser window's Win32 HWND is currently parented to a valid, live desktop window.
+ * Returns false if Explorer crashed or the parent WorkerW was destroyed.
  */
-function sendToBottom(browserWindow) {
-  const hwnd = electronHwnd(browserWindow);
-  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
-    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING
-  );
+function isWindowAttached(browserWindow) {
+  if (!browserWindow || browserWindow.isDestroyed()) return false;
+  try {
+    const hwnd = electronHwnd(browserWindow);
+    const parent = GetParent(hwnd);
+    if (isNull(parent)) return false;
+    return IsWindow(parent) !== 0;
+  } catch (_) {
+    return false;
+  }
 }
 
-module.exports = { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom };
+module.exports = {
+  attachToDesktop,
+  detachFromDesktop,
+  setClickThrough,
+  sendToBottom,
+  isWindowAttached
+};
