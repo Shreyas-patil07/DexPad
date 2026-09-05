@@ -12,7 +12,7 @@ const store = new Store({
     ideonUrl: process.env.IDEON_URL || 'http://localhost:3000',
     startup: true,
     wallpaperMode: true,
-    interactive: false,
+    interactive: true,
     authSecret: null
   }
 });
@@ -61,8 +61,6 @@ function getNodeExecutable() {
     if (systemNode) return systemNode;
   }
 
-  // Fall back to PATH resolution. This is the normal path for development and
-  // also works for packaged installs when Node.js is installed system-wide.
   return 'node';
 }
 
