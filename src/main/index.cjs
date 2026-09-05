@@ -1,4 +1,4 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, Menu, Tray, nativeImage, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -169,20 +169,36 @@ function startIdeonServer() {
   }
   const serverFile = path.join(serverDir, 'dist', 'server.cjs');
   const nodeCommand = process.env.NODE_EXECUTABLE || process.execPath;
+  const childEnv = {
+    ...process.env,
+    AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST || 'true',
+    AUTH_SECRET: process.env.AUTH_SECRET || getAuthSecret(),
+    NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=8192'
+  };
+
+  // In Electron, process.execPath is electron.exe rather than node.exe.
+  // Explicitly put spawned Electron children into Node mode so the Ideon CJS
+  // server is executed by Electron's embedded Node runtime instead of being
+  // interpreted as another Electron application.
+  if (!process.env.NODE_EXECUTABLE) {
+    childEnv.ELECTRON_RUN_AS_NODE = '1';
+  }
+
   ideonServer = spawn(nodeCommand, [serverFile], {
     cwd: serverDir,
-    env: {
-      ...process.env,
-      AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST || 'true',
-      AUTH_SECRET: process.env.AUTH_SECRET || getAuthSecret(),
-      NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=8192'
-    },
+    env: childEnv,
     stdio: 'inherit',
     windowsHide: true
   });
-  ideonServer.on('exit', (code) => {
+  ideonServer.on('exit', (code, signal) => {
     ideonServer = null;
-    if (!shuttingDown && code) console.error(`[DexPad] Ideon server exited with code ${code}`);
+    if (!shuttingDown && (code || signal)) {
+      console.error(`[DexPad] Ideon server exited with code ${code} signal ${signal || 'none'}`);
+    }
+  });
+  ideonServer.on('error', (error) => {
+    ideonServer = null;
+    if (!shuttingDown) console.error('[DexPad] Failed to start Ideon server:', error);
   });
 }
 
