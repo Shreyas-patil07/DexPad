@@ -111,21 +111,11 @@ function rebuildTrayMenu() {
 }
 
 function getDesktopBounds() {
-  const displays = screen.getAllDisplays();
-  const left = Math.min(...displays.map(d => d.bounds.x));
-  const top = Math.min(...displays.map(d => d.bounds.y));
-  const right = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
-  const bottom = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
-  return { x: left, y: top, width: right - left, height: bottom - top };
-}
-
-function getFloatingPanelBounds() {
   const display = screen.getPrimaryDisplay();
   const workArea = display.workArea;
   const width = Math.min(960, Math.round(workArea.width * 0.52));
   const height = Math.min(820, Math.round(workArea.height * 0.84));
   const margin = Math.max(24, Math.round(workArea.width * 0.02));
-
   return {
     x: workArea.x + workArea.width - width - margin,
     y: workArea.y + Math.round((workArea.height - height) / 2),
@@ -136,15 +126,15 @@ function getFloatingPanelBounds() {
 
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
-  const bounds = getFloatingPanelBounds();
+  const bounds = getDesktopBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
-    sendToBottom(desktopWindow);
+    setClickThrough(desktopWindow, !store.get('interactive'));
     return desktopWindow;
   }
   desktopWindow = new BrowserWindow({
     x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
-    frame: false, resizable: false, movable: false, focusable: false,
+    frame: false, resizable: false, movable: false, focusable: true,
     skipTaskbar: true, show: false, backgroundColor: '#000000',
     webPreferences: { contextIsolation: true, sandbox: true }
   });
@@ -152,8 +142,7 @@ function createDesktopWindow() {
   desktopWindow.loadURL(store.get('ideonUrl'));
   desktopWindow.once('ready-to-show', () => {
     try {
-      attachToDesktop(desktopWindow, bounds);
-      setClickThrough(desktopWindow, !store.get('interactive'));
+      attachToDesktop(desktopWindow, bounds, store.get('interactive'));
       desktopWindow.showInactive();
     } catch (error) {
       console.error('[DexPad] WorkerW attachment failed:', error);
@@ -180,7 +169,7 @@ function setInteractiveMode(enabled) {
   store.set('interactive', enabled);
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     setClickThrough(desktopWindow, !enabled);
-    if (!enabled) sendToBottom(desktopWindow);
+    if (enabled) desktopWindow.focus();
   }
   rebuildTrayMenu();
 }
@@ -197,7 +186,6 @@ function startIdeonServer() {
     console.warn('[DexPad] No built Ideon server found. Run npm run bootstrap:ideon or set IDEON_URL.');
     return;
   }
-
   const serverFile = path.join(serverDir, 'dist', 'server.cjs');
   const nodeCommand = getNodeExecutable();
   const childEnv = {
@@ -206,16 +194,8 @@ function startIdeonServer() {
     AUTH_SECRET: process.env.AUTH_SECRET || getAuthSecret(),
     NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=8192'
   };
-
   console.log(`[DexPad] Starting Ideon with Node: ${nodeCommand}`);
-
-  ideonServer = spawn(nodeCommand, [serverFile], {
-    cwd: serverDir,
-    env: childEnv,
-    stdio: 'inherit',
-    windowsHide: true
-  });
-
+  ideonServer = spawn(nodeCommand, [serverFile], { cwd: serverDir, env: childEnv, stdio: 'inherit', windowsHide: true });
   ideonServer.on('spawn', () => console.log('[DexPad] Ideon server process started.'));
   ideonServer.on('exit', (code, signal) => {
     ideonServer = null;
