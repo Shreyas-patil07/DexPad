@@ -19,17 +19,10 @@ const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_
 const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [
   'void *', 'void *', 'int32', 'int32', 'int32', 'int32', 'uint32'
 ]);
-const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'uint32']);
+const GetClientRect = user32.func('__stdcall', 'GetClientRect', 'int32', ['void *', 'void *']);
+const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
 const SetForegroundWindow = user32.func('__stdcall', 'SetForegroundWindow', 'int32', ['void *']);
 const BringWindowToTop = user32.func('__stdcall', 'BringWindowToTop', 'int32', ['void *']);
-
-const RECT = koffi.struct('RECT', {
-  left: 'long',
-  top: 'long',
-  right: 'long',
-  bottom: 'long'
-});
-const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', ['void *', koffi.pointer(RECT)]);
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -54,13 +47,6 @@ const SMTO_NORMAL = 0;
 
 function bufferToHwnd(buf) {
   return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
-}
-
-function getWindowRect(hwnd) {
-  const rect = { left: 0, top: 0, right: 0, bottom: 0 };
-  const ok = GetWindowRect(hwnd, rect);
-  if (!ok) throw new Error('GetWindowRect failed.');
-  return rect;
 }
 
 function sendSpawnWorkerMessage(progman) {
@@ -151,29 +137,37 @@ function activateWindow(browserWindow) {
 function attachToDesktop(browserWindow, bounds) {
   const hwnd = prepareNativeWindow(browserWindow);
   const workerW = findWorkerW();
-  const workerRect = getWindowRect(workerW);
 
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
   SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
   SetParent(hwnd, workerW);
 
-  // After SetParent(), SetWindowPos() expects coordinates relative to WorkerW,
-  // not absolute desktop coordinates. Convert the requested screen-space bounds
-  // to WorkerW-local coordinates so the panel remains visible at the right edge.
-  const localX = bounds.x - workerRect.left;
-  const localY = bounds.y - workerRect.top;
+  // SetWindowPos coordinates for a child are relative to the Worker's client
+  // area, not absolute screen coordinates. Use the client origin explicitly.
+  // This prevents the wallpaper panel from being placed off-screen after
+  // SetParent on Windows 10/11.
+  const clientRect = Buffer.alloc(16);
+  if (!GetClientRect(workerW, clientRect)) {
+    throw new Error('Failed to query WorkerW client area.');
+  }
+  const clientLeft = clientRect.readInt32LE(0);
+  const clientTop = clientRect.readInt32LE(4);
+
+  const x = Math.round(bounds.x - clientLeft);
+  const y = Math.round(bounds.y - clientTop);
 
   SetWindowPos(
     hwnd,
     HWND_TOP,
-    localX,
-    localY,
+    x,
+    y,
     bounds.width,
     bounds.height,
     SWP_NOACTIVATE | SWP_SHOWWINDOW
   );
 
-  setClickThrough(browserWindow, true);
+  // Explicitly bring the child to the top of the selected WorkerW while
+  // leaving the WorkerW itself below the desktop icon layer.
   ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   return true;
 }
