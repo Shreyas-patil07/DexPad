@@ -32,6 +32,7 @@ execFileSync('corepack', [
   'pnpm', 'add',
   '@tiptap/core@3.31.3',
   '@tiptap/pm@3.31.3',
+  'classic-level@^2.0.1',
   'katex@^0.16.22',
   'lodash@^4.18.1',
   'prismjs@^1.30.0',
