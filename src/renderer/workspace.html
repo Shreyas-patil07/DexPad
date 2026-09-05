@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DexPad</title>
+  <link rel="stylesheet" href="workspace.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="toolbar">
+      <div class="brand">
+        <span class="brand-mark">D</span>
+        <div><strong>DexPad</strong><small id="mode-label">Local workspace</small></div>
+      </div>
+      <div id="controls" class="controls">
+        <button data-add="note">+ Note</button>
+        <button data-add="todo">+ Todo</button>
+        <button data-add="link">+ Link</button>
+        <button id="save" class="primary">Save</button>
+      </div>
+    </header>
+    <main id="canvas" class="canvas" aria-label="DexPad canvas"></main>
+    <div id="empty" class="empty-state"><strong>Your desktop, organized.</strong><span>Add notes, todos, and links. Everything is stored locally.</span></div>
+  </div>
+  <script src="workspace.js"></script>
+</body>
+</html>
