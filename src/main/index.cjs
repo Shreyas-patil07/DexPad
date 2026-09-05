@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const Store = require('electron-store');
-const { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom, activateWindow } = require('./win32-wallpaper.cjs');
+const { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom } = require('./win32-wallpaper.cjs');
 
 const store = new Store({
   name: 'dexpad',
@@ -13,7 +13,7 @@ const store = new Store({
     startup: true,
     wallpaperMode: true,
     interactive: true,
-    interactionConfigVersion: 2,
+    interactionConfigVersion: 3,
     authSecret: null
   }
 });
@@ -59,28 +59,54 @@ function getNodeExecutable() {
 
 function migrateInteractionConfig() {
   const version = Number(store.get('interactionConfigVersion') || 0);
-  if (version < 2) {
-    // Older builds persisted interactive=false while experimenting with the
-    // WorkerW wallpaper surface. Start the upgraded build in an actually
-    // interactive state; the user can still toggle it off from the tray or
-    // Ctrl+Alt+D for click-through wallpaper mode.
+  if (version < 3) {
     store.set('interactive', true);
-    store.set('interactionConfigVersion', 2);
+    store.set('interactionConfigVersion', 3);
   }
+}
+
+function getPanelBounds() {
+  const display = screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const width = Math.min(960, Math.round(workArea.width * 0.52));
+  const height = Math.min(820, Math.round(workArea.height * 0.84));
+  const margin = Math.max(24, Math.round(workArea.width * 0.02));
+  return {
+    x: workArea.x + workArea.width - width - margin,
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height
+  };
 }
 
 function createWorkspaceWindow() {
   if (workspaceWindow && !workspaceWindow.isDestroyed()) {
+    workspaceWindow.setBounds(getPanelBounds());
     workspaceWindow.show();
     workspaceWindow.focus();
     return workspaceWindow;
   }
+
+  const bounds = getPanelBounds();
   workspaceWindow = new BrowserWindow({
-    width: 1400, height: 900, show: false, backgroundColor: '#0b0d10',
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: true,
+    resizable: true,
+    movable: true,
+    focusable: true,
+    skipTaskbar: false,
+    backgroundColor: '#0b0d10',
     webPreferences: { contextIsolation: true, sandbox: true }
   });
   workspaceWindow.loadURL(store.get('ideonUrl'));
-  workspaceWindow.once('ready-to-show', () => workspaceWindow.show());
+  workspaceWindow.once('ready-to-show', () => {
+    workspaceWindow.show();
+    workspaceWindow.focus();
+  });
   workspaceWindow.on('closed', () => { workspaceWindow = null; });
   return workspaceWindow;
 }
@@ -104,7 +130,7 @@ function createTray() {
   if (tray) return;
   tray = new Tray(nativeImage.createEmpty());
   tray.setToolTip('DexPad');
-  tray.on('double-click', createWorkspaceWindow);
+  tray.on('double-click', () => setInteractiveMode(true));
   rebuildTrayMenu();
 }
 
@@ -113,7 +139,7 @@ function rebuildTrayMenu() {
   const wallpaper = store.get('wallpaperMode');
   const interactive = store.get('interactive');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open DexPad', click: createWorkspaceWindow },
+    { label: 'Open DexPad', click: () => setInteractiveMode(true) },
     { type: 'separator' },
     { label: 'Desktop Wallpaper', type: 'checkbox', checked: wallpaper, click: () => setWallpaperMode(!wallpaper) },
     { label: 'Interactive Mode', type: 'checkbox', checked: interactive, click: () => setInteractiveMode(!interactive) },
@@ -123,76 +149,39 @@ function rebuildTrayMenu() {
   ]));
 }
 
-function getDesktopBounds() {
-  const display = screen.getPrimaryDisplay();
-  const workArea = display.workArea;
-  const width = Math.min(960, Math.round(workArea.width * 0.52));
-  const height = Math.min(820, Math.round(workArea.height * 0.84));
-  const margin = Math.max(24, Math.round(workArea.width * 0.02));
-  return {
-    x: workArea.x + workArea.width - width - margin,
-    y: workArea.y + Math.round((workArea.height - height) / 2),
-    width,
-    height
-  };
-}
-
-function applyWindowInputMode() {
-  if (!desktopWindow || desktopWindow.isDestroyed()) return;
-  const interactive = store.get('interactive');
-
-  if (interactive) {
-    try {
-      detachFromDesktop(desktopWindow);
-    } catch (error) {
-      console.warn('[DexPad] Failed to detach interactive window:', error);
-    }
-
-    desktopWindow.setIgnoreMouseEvents(false);
-    desktopWindow.setFocusable(true);
-    desktopWindow.setAlwaysOnTop(true, 'floating');
-    setClickThrough(desktopWindow, false);
-    desktopWindow.show();
-    desktopWindow.focus();
-    activateWindow(desktopWindow);
-    return;
-  }
-
-  desktopWindow.setAlwaysOnTop(false);
-  setClickThrough(desktopWindow, true);
-  desktopWindow.setIgnoreMouseEvents(true);
-  try {
-    attachToDesktop(desktopWindow, getDesktopBounds());
-  } catch (error) {
-    console.error('[DexPad] WorkerW attachment failed:', error);
-    return;
-  }
-  desktopWindow.showInactive();
-  sendToBottom(desktopWindow);
-}
-
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
-  const bounds = getDesktopBounds();
+  const bounds = getPanelBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
-    applyWindowInputMode();
     return desktopWindow;
   }
 
   desktopWindow = new BrowserWindow({
-    x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
-    frame: false, resizable: false, movable: false, focusable: true,
-    skipTaskbar: true, show: false, backgroundColor: '#000000',
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    focusable: false,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#000000',
     webPreferences: { contextIsolation: true, sandbox: true }
   });
   desktopWindow.setMenu(null);
+  desktopWindow.setIgnoreMouseEvents(true);
   desktopWindow.loadURL(store.get('ideonUrl'));
   desktopWindow.once('ready-to-show', () => {
     try {
-      applyWindowInputMode();
+      attachToDesktop(desktopWindow, bounds);
+      setClickThrough(desktopWindow, true);
+      desktopWindow.showInactive();
+      sendToBottom(desktopWindow);
     } catch (error) {
-      console.error('[DexPad] Failed to configure desktop window:', error);
+      console.error('[DexPad] WorkerW attachment failed:', error);
     }
   });
   desktopWindow.on('closed', () => { desktopWindow = null; });
@@ -206,18 +195,44 @@ function destroyDesktopWindow() {
   desktopWindow = null;
 }
 
+function enterInteractiveMode() {
+  destroyDesktopWindow();
+  const window = createWorkspaceWindow();
+  window.setBounds(getPanelBounds());
+  window.setIgnoreMouseEvents(false);
+  window.setAlwaysOnTop(false);
+  window.show();
+  window.focus();
+}
+
+function enterWallpaperMode() {
+  if (workspaceWindow && !workspaceWindow.isDestroyed()) {
+    workspaceWindow.hide();
+  }
+  createDesktopWindow();
+}
+
 function setWallpaperMode(enabled) {
   store.set('wallpaperMode', enabled);
-  if (enabled) createDesktopWindow();
-  else destroyDesktopWindow();
+  if (!enabled) {
+    destroyDesktopWindow();
+    enterInteractiveMode();
+  } else if (store.get('interactive')) {
+    enterInteractiveMode();
+  } else {
+    enterWallpaperMode();
+  }
   rebuildTrayMenu();
 }
 
 function setInteractiveMode(enabled) {
   store.set('interactive', enabled);
-  if (desktopWindow && !desktopWindow.isDestroyed()) {
-    desktopWindow.setBounds(getDesktopBounds());
-    applyWindowInputMode();
+  if (enabled) {
+    enterInteractiveMode();
+  } else if (store.get('wallpaperMode')) {
+    enterWallpaperMode();
+  } else {
+    createWorkspaceWindow();
   }
   rebuildTrayMenu();
 }
@@ -280,7 +295,7 @@ ipcMain.handle('dexpad:set-state', (_event, state) => {
   };
 });
 
-ipcMain.handle('dexpad:open-workspace', () => { createWorkspaceWindow(); return true; });
+ipcMain.handle('dexpad:open-workspace', () => { setInteractiveMode(true); return true; });
 ipcMain.handle('dexpad:open-url', (_event, url) => {
   if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('Only http(s) URLs are allowed.');
   return shell.openExternal(url);
@@ -293,15 +308,28 @@ app.whenReady().then(() => {
   globalShortcut.register('CommandOrControl+Alt+D', () => setInteractiveMode(!store.get('interactive')));
   createTray();
   startIdeonServer();
-  if (store.get('wallpaperMode')) createDesktopWindow();
-  else if (!process.argv.includes('--hidden')) createWorkspaceWindow();
-  const refresh = () => { if (store.get('wallpaperMode')) createDesktopWindow(); };
+
+  if (store.get('interactive')) {
+    createWorkspaceWindow();
+  } else if (store.get('wallpaperMode')) {
+    createDesktopWindow();
+  } else {
+    createWorkspaceWindow();
+  }
+
+  const refresh = () => {
+    if (store.get('interactive')) {
+      if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.setBounds(getPanelBounds());
+    } else if (store.get('wallpaperMode')) {
+      createDesktopWindow();
+    }
+  };
   screen.on('display-metrics-changed', refresh);
   screen.on('display-added', refresh);
   screen.on('display-removed', refresh);
 });
 
-app.on('second-instance', createWorkspaceWindow);
+app.on('second-instance', () => setInteractiveMode(true));
 app.on('window-all-closed', (event) => event.preventDefault());
 app.on('before-quit', () => {
   shuttingDown = true;
