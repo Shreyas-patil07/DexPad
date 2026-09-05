@@ -20,9 +20,13 @@ let shuttingDown = false;
 
 const workspaceFile = path.join(__dirname, '../renderer/workspace.html');
 
-function getPanelBounds() {
+function getPrimaryWorkArea() {
   const display = screen.getPrimaryDisplay();
-  const workArea = display.workArea;
+  return display.workArea;
+}
+
+function getPanelBounds() {
+  const workArea = getPrimaryWorkArea();
   const width = Math.min(960, Math.round(workArea.width * 0.52));
   const height = Math.min(820, Math.round(workArea.height * 0.84));
   const margin = Math.max(24, Math.round(workArea.width * 0.02));
@@ -32,6 +36,11 @@ function getPanelBounds() {
     width,
     height
   };
+}
+
+function getWallpaperBounds() {
+  const display = screen.getPrimaryDisplay();
+  return display.bounds;
 }
 
 function normalizeCard(card, index = 0) {
@@ -119,7 +128,9 @@ function createWorkspaceWindow() {
 function showDesktopWallpaper() {
   if (!desktopWindow || desktopWindow.isDestroyed()) return;
   try {
-    attachToDesktop(desktopWindow, getPanelBounds());
+    const bounds = getWallpaperBounds();
+    desktopWindow.setBounds(bounds);
+    attachToDesktop(desktopWindow, bounds);
     setClickThrough(desktopWindow, true);
     desktopWindow.setIgnoreMouseEvents(true);
     desktopWindow.showInactive();
@@ -131,7 +142,7 @@ function showDesktopWallpaper() {
 
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
-  const bounds = getPanelBounds();
+  const bounds = getWallpaperBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
     showDesktopWallpaper();
@@ -145,11 +156,13 @@ function createDesktopWindow() {
     height: bounds.height,
     show: false,
     frame: false,
+    transparent: true,
     resizable: false,
     movable: false,
     focusable: false,
     skipTaskbar: true,
-    backgroundColor: '#000000',
+    hasShadow: false,
+    backgroundColor: '#00000000',
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -185,6 +198,7 @@ function refreshWallpaper() {
     wallpaperMode: store.get('wallpaperMode'),
     cards: getCards()
   });
+  showDesktopWallpaper();
   return true;
 }
 
@@ -201,7 +215,8 @@ function setControlWindowOpen(enabled) {
 function setWallpaperMode(enabled) {
   store.set('wallpaperMode', enabled);
   if (enabled) {
-    createDesktopWindow();
+    if (!desktopWindow || desktopWindow.isDestroyed()) createDesktopWindow();
+    if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.hide();
   } else {
     destroyDesktopWindow();
     if (!workspaceWindow || workspaceWindow.isDestroyed()) createWorkspaceWindow();
@@ -270,10 +285,6 @@ function quitApp() {
   destroyDesktopWindow();
   if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.destroy();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
-  if (tray) {
-    tray.destroy();
-    tray = null;
-  }
   app.quit();
 }
 
@@ -320,7 +331,7 @@ app.whenReady().then(() => {
   else createWorkspaceWindow();
 
   const refresh = () => {
-    if (store.get('wallpaperMode')) createDesktopWindow();
+    if (store.get('wallpaperMode')) refreshWallpaper();
   };
   screen.on('display-metrics-changed', refresh);
   screen.on('display-added', refresh);
