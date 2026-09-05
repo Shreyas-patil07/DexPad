@@ -30,7 +30,7 @@ describe('Card Schema Validation (normalizeCard)', () => {
     assert.strictEqual(norm.x, 0, 'Negative x clamped to 0');
     assert.strictEqual(norm.y, 0, 'Negative y clamped to 0');
     assert.strictEqual(norm.width, 220, 'Width clamped to min 220');
-    assert.strictEqual(norm.height, 520, 'Height clamped to max 520');
+    assert.strictEqual(norm.height, 720, 'Height clamped to max 720');
   });
 
   test('sanitizes strings and types', () => {
@@ -53,6 +53,27 @@ describe('Card Schema Validation (normalizeCard)', () => {
     const cardWithoutZ = normalizeCard({ id: 'z2' }, 3, 10);
     assert.strictEqual(cardWithoutZ.zIndex, 13);
   });
+
+  test('normalizes extensible block fields (tags, colors, pinned, content)', () => {
+    const raw = {
+      id: 'block-1',
+      type: 'markdown',
+      color: 'cyan_unknown', // should fallback to default
+      pinned: true,
+      tags: ['  productivity ', 'personal', 123, ''],
+      content: {
+        title: 'Design Specs',
+        markdown: '# Architecture\nDetails here...'
+      }
+    };
+    const block = normalizeCard(raw);
+    assert.strictEqual(block.type, 'markdown');
+    assert.strictEqual(block.color, 'default');
+    assert.strictEqual(block.pinned, true);
+    assert.deepStrictEqual(block.tags, ['productivity', 'personal']);
+    assert.strictEqual(block.title, 'Design Specs');
+    assert.strictEqual(block.content.markdown, '# Architecture\nDetails here...');
+  });
 });
 
 describe('URL Semantic Verification (isValidUrl)', () => {
@@ -73,7 +94,7 @@ describe('URL Semantic Verification (isValidUrl)', () => {
 });
 
 describe('State Migration (migrateState)', () => {
-  test('migrates unversioned legacy state to schema version 1', () => {
+  test('migrates unversioned legacy state to schema version 2', () => {
     const legacy = {
       startup: true,
       wallpaperMode: false,
@@ -84,11 +105,30 @@ describe('State Migration (migrateState)', () => {
     };
     const migrated = migrateState(legacy);
     assert.strictEqual(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
+    assert.strictEqual(migrated.schemaVersion, 2);
     assert.strictEqual(migrated.startup, true);
     assert.strictEqual(migrated.wallpaperMode, false);
     assert.strictEqual(migrated.cards.length, 2);
     assert.strictEqual(migrated.cards[0].zIndex, 1);
     assert.strictEqual(migrated.cards[1].zIndex, 2);
+    assert.strictEqual(migrated.cards[0].color, 'default');
+    assert.deepStrictEqual(migrated.cards[0].tags, []);
+    assert.strictEqual(migrated.cards[0].content.title, 'Task 1');
+  });
+
+  test('migrates schema version 1 to schema version 2 cleanly', () => {
+    const v1State = {
+      schemaVersion: 1,
+      startup: false,
+      wallpaperMode: true,
+      cards: [
+        { id: 'b1', type: 'link', title: 'GitHub', url: 'https://github.com', zIndex: 5 }
+      ]
+    };
+    const migrated = migrateState(v1State);
+    assert.strictEqual(migrated.schemaVersion, 2);
+    assert.strictEqual(migrated.cards[0].zIndex, 5);
+    assert.strictEqual(migrated.cards[0].content.url, 'https://github.com');
   });
 
   test('handles empty or malformed state safely', () => {

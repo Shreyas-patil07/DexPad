@@ -11,9 +11,93 @@ if (WALLPAPER) {
 }
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
-const canvas     = document.getElementById('canvas');
-const emptyState = document.getElementById('empty-state');
-const controls   = document.getElementById('controls');
+const canvas       = document.getElementById('canvas');
+const world        = document.getElementById('world') || canvas;
+const emptyState   = document.getElementById('empty-state');
+const controls     = document.getElementById('controls');
+const zoomHud      = document.getElementById('zoom-hud');
+const zoomLevel    = document.getElementById('zoom-level');
+const btnZoomIn    = document.getElementById('btn-zoom-in');
+const btnZoomOut   = document.getElementById('btn-zoom-out');
+const btnZoomReset = document.getElementById('btn-zoom-reset');
+
+// ─── Camera (Infinite Canvas Engine) ──────────────────────────────────────────
+const camera = {
+  x: 0,
+  y: 0,
+  zoom: 1
+};
+
+function applyCamera() {
+  if (WALLPAPER) return;
+  if (world) {
+    world.style.transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.zoom})`;
+  }
+  if (canvas) {
+    canvas.style.backgroundPosition = `${camera.x}px ${camera.y}px`;
+    canvas.style.backgroundSize = `${28 * camera.zoom}px ${28 * camera.zoom}px`;
+  }
+  if (zoomLevel) {
+    zoomLevel.textContent = `${Math.round(camera.zoom * 100)}%`;
+  }
+}
+
+function setZoom(newZoom, anchorX = null, anchorY = null) {
+  if (WALLPAPER) return;
+  const clamped = Math.max(0.3, Math.min(2.5, newZoom));
+  if (Math.abs(clamped - camera.zoom) < 0.001) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const ax = anchorX !== null ? anchorX : rect.width / 2;
+  const ay = anchorY !== null ? anchorY : rect.height / 2;
+
+  // Preserve the world point directly under (ax, ay) during scaling
+  camera.x = ax - (ax - camera.x) * (clamped / camera.zoom);
+  camera.y = ay - (ay - camera.y) * (clamped / camera.zoom);
+  camera.zoom = clamped;
+  applyCamera();
+}
+
+function resetCamera() {
+  camera.x = 0;
+  camera.y = 0;
+  camera.zoom = 1;
+  applyCamera();
+}
+
+// ─── Selection State ──────────────────────────────────────────────────────────
+const selectedIds = new Set();
+
+function selectCard(id, multi = false) {
+  if (WALLPAPER) return;
+  if (!multi) selectedIds.clear();
+  selectedIds.add(id);
+  updateSelectionStyles();
+}
+
+function toggleSelectCard(id) {
+  if (WALLPAPER) return;
+  if (selectedIds.has(id)) selectedIds.delete(id);
+  else selectedIds.add(id);
+  updateSelectionStyles();
+}
+
+function clearSelection() {
+  if (WALLPAPER || selectedIds.size === 0) return;
+  selectedIds.clear();
+  updateSelectionStyles();
+}
+
+function updateSelectionStyles() {
+  if (WALLPAPER) return;
+  for (const el of world.querySelectorAll('.card[data-id]')) {
+    if (selectedIds.has(el.dataset.id)) {
+      el.classList.add('card--selected');
+    } else {
+      el.classList.remove('card--selected');
+    }
+  }
+}
 
 // ─── App state ────────────────────────────────────────────────────────────────
 let cards     = [];
@@ -22,12 +106,14 @@ let saveTimer = null;
 // ResizeObserver map — tracked so we can disconnect before removing elements
 const roMap = new Map();
 
-// Drag state
+// Drag and Pan state
 let drag = null;
+let panState = null;
+let isSpacePressed = false;
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 function uid() {
-  return `card-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  return `block-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 function isValidUrl(str) {
@@ -58,6 +144,10 @@ function bringToFront(card, el) {
 function newCard(type) {
   const col = cards.length % 2;
   const row = Math.floor(cards.length / 2);
+  // Default spawn near camera center in world coordinates
+  const spawnX = Math.max(20, Math.round((-camera.x + 80) / camera.zoom + col * 340));
+  const spawnY = Math.max(20, Math.round((-camera.y + 80) / camera.zoom + row * 220));
+
   return {
     id: uid(),
     type,
@@ -65,11 +155,14 @@ function newCard(type) {
     body: '',
     url: type === 'link' ? 'https://' : '',
     done: false,
-    x: 20 + col * 340,
-    y: 20 + row * 220,
+    x: spawnX,
+    y: spawnY,
     width: 300,
     height: type === 'note' ? 200 : 165,
-    zIndex: getMaxZIndex() + 1
+    zIndex: getMaxZIndex() + 1,
+    color: 'default',
+    pinned: false,
+    tags: []
   };
 }
 
@@ -127,8 +220,8 @@ function connectRO(el, card) {
   const ro = new ResizeObserver(([entry]) => {
     if (!entry) return;
     const { width, height } = entry.contentRect;
-    const w = Math.max(220, Math.min(520, Math.round(width)));
-    const h = Math.max(140, Math.min(520, Math.round(height)));
+    const w = Math.max(220, Math.min(720, Math.round(width)));
+    const h = Math.max(140, Math.min(720, Math.round(height)));
     if (card.width !== w || card.height !== h) {
       card.width = w; card.height = h;
       scheduleSave();
@@ -148,15 +241,26 @@ function disconnectAllRO() {
   roMap.clear();
 }
 
-// ─── Build a card element (called only once per card lifetime) ────────────────
+// ─── Build a card element ─────────────────────────────────────────────────────
 function buildCard(card) {
   const el = document.createElement('article');
   el.className  = 'card';
   el.dataset.id = card.id;
   positionCard(el, card);
 
-  // Elevate card to front when clicked or focused
-  el.addEventListener('mousedown', () => bringToFront(card, el));
+  if (selectedIds.has(card.id)) el.classList.add('card--selected');
+
+  // Elevate card to front and handle selection
+  el.addEventListener('mousedown', (e) => {
+    bringToFront(card, el);
+    if (!WALLPAPER && !e.target.closest('button,input,textarea,a')) {
+      if (e.shiftKey) {
+        toggleSelectCard(card.id);
+      } else if (!selectedIds.has(card.id)) {
+        selectCard(card.id, false);
+      }
+    }
+  });
 
   // ── Header ──
   const head = document.createElement('div');
@@ -177,12 +281,13 @@ function buildCard(card) {
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       disconnectRO(card.id);
+      selectedIds.delete(card.id);
       el.classList.add('card--removing');
       el.addEventListener('animationend', () => {
         el.remove();
         cards = cards.filter((c) => c.id !== card.id);
         updateEmptyState();
-        flushSave(); // Immediate persist on delete
+        flushSave();
       }, { once: true });
     });
     head.appendChild(delBtn);
@@ -203,7 +308,7 @@ function buildCard(card) {
     cb.dataset.field = 'done';
     cb.addEventListener('change', () => {
       patchCard(card.id, { done: cb.checked });
-      flushSave(); // Immediate persist on todo toggle
+      flushSave();
     });
 
     const titleIn = makeInput('text', card.title, 'title-input', 'Task description', 'title');
@@ -231,7 +336,6 @@ function buildCard(card) {
       const urlIn = makeInput('url', card.url, 'url-input', 'https://example.com', 'url');
       urlIn.addEventListener('input', () => {
         patchCard(card.id, { url: urlIn.value });
-        // Update anchor without re-render
         const a = el.querySelector('.link-open');
         if (a) { a.href = urlIn.value; a.hidden = !isValidUrl(urlIn.value); }
       });
@@ -274,21 +378,19 @@ function positionCard(el, card) {
 }
 
 // ─── Reconciler ───────────────────────────────────────────────────────────────
-// Updates the DOM to match `cards` WITHOUT destroying existing elements.
-// This prevents animation replay, focus loss, and visual glitching.
 function reconcile() {
-  // Index current DOM cards
   const domMap = new Map();
-  for (const el of canvas.querySelectorAll('.card[data-id]')) {
+  for (const el of world.querySelectorAll('.card[data-id]')) {
     domMap.set(el.dataset.id, el);
   }
 
   const liveIds = new Set(cards.map((c) => c.id));
 
-  // Remove cards that were deleted externally
+  // Remove cards deleted externally
   for (const [id, el] of domMap) {
     if (!liveIds.has(id)) {
       disconnectRO(id);
+      selectedIds.delete(id);
       el.remove();
       domMap.delete(id);
     }
@@ -298,28 +400,24 @@ function reconcile() {
   for (const card of cards) {
     const existing = domMap.get(card.id);
     if (existing) {
-      // Update position/size in-place (skip during active drag)
       if (!drag || drag.card.id !== card.id) {
         positionCard(existing, card);
       }
-      // Patch input values ONLY for inputs that don't have focus
-      // (never overwrite what the user is currently typing)
       syncInputs(existing, card);
     } else {
-      // New card — build it and give it the entry animation
       const el = buildCard(card);
       el.classList.add('card--entering');
-      canvas.appendChild(el);
+      world.appendChild(el);
     }
   }
 
+  updateSelectionStyles();
   updateEmptyState();
 }
 
-// Update input values in an existing card element without disturbing focus
 function syncInputs(el, card) {
   for (const input of el.querySelectorAll('[data-field]')) {
-    if (input === document.activeElement) continue; // never disturb the focused input
+    if (input === document.activeElement) continue;
     const field = input.dataset.field;
     if (field === 'done') {
       if (input.checked !== card.done) input.checked = card.done;
@@ -328,7 +426,6 @@ function syncInputs(el, card) {
       if (input.value !== val) input.value = val;
     }
   }
-  // Sync link anchor
   const anchor = el.querySelector('.link-open');
   if (anchor) {
     if (anchor.href !== card.url) anchor.href = card.url;
@@ -336,25 +433,54 @@ function syncInputs(el, card) {
   }
 }
 
-// ─── Full render (used for initial load only) ─────────────────────────────────
+// ─── Full render ──────────────────────────────────────────────────────────────
 function fullRender() {
   disconnectAllRO();
-  canvas.replaceChildren(...cards.map(buildCard));
+  world.replaceChildren(...cards.map(buildCard));
+  updateSelectionStyles();
   updateEmptyState();
+  applyCamera();
 }
 
 function updateEmptyState() {
   if (emptyState) emptyState.hidden = WALLPAPER || cards.length > 0;
   if (controls)   controls.hidden   = WALLPAPER;
+  if (zoomHud)    zoomHud.hidden    = WALLPAPER;
 }
 
-// ─── Drag ─────────────────────────────────────────────────────────────────────
+// ─── Drag & Multi-Select Drag ─────────────────────────────────────────────────
 function startDrag(e, card, el) {
-  if (e.button !== 0 || WALLPAPER) return;
+  if (e.button !== 0 || WALLPAPER || isSpacePressed) return;
   if (e.target.closest('button,input,textarea,a,label')) return;
   e.preventDefault();
   bringToFront(card, el);
-  drag = { card, el, startX: e.clientX, startY: e.clientY, origX: card.x, origY: card.y };
+
+  if (e.shiftKey) {
+    toggleSelectCard(card.id);
+  } else if (!selectedIds.has(card.id)) {
+    selectCard(card.id, false);
+  }
+
+  // Snapshot initial coordinates for all selected cards to support batch drag
+  const movingCards = selectedIds.has(card.id)
+    ? cards.filter((c) => selectedIds.has(c.id))
+    : [card];
+
+  const snapshots = movingCards.map((c) => ({
+    card: c,
+    el: world.querySelector(`.card[data-id="${c.id}"]`),
+    origX: c.x,
+    origY: c.y
+  })).filter((s) => s.el);
+
+  drag = {
+    card,
+    el,
+    startX: e.clientX,
+    startY: e.clientY,
+    snapshots
+  };
+
   window.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup',   onUp,     { once: true });
   window.addEventListener('blur',      onCancel, { once: true });
@@ -362,28 +488,138 @@ function startDrag(e, card, el) {
 
 function onMove(e) {
   if (!drag) return;
-  drag.card.x = Math.max(0, Math.round(drag.origX + e.clientX - drag.startX));
-  drag.card.y = Math.max(0, Math.round(drag.origY + e.clientY - drag.startY));
-  drag.el.style.left = `${drag.card.x}px`;
-  drag.el.style.top  = `${drag.card.y}px`;
+  // Apply inverse camera zoom so cursor drag stays precisely 1:1 on infinite canvas
+  const dx = (e.clientX - drag.startX) / camera.zoom;
+  const dy = (e.clientY - drag.startY) / camera.zoom;
+
+  for (const item of drag.snapshots) {
+    item.card.x = Math.max(0, Math.round(item.origX + dx));
+    item.card.y = Math.max(0, Math.round(item.origY + dy));
+    item.el.style.left = `${item.card.x}px`;
+    item.el.style.top  = `${item.card.y}px`;
+  }
 }
 
 function onUp() {
   if (!drag) return;
   window.removeEventListener('mousemove', onMove);
   window.removeEventListener('blur',      onCancel);
-  flushSave(); // Persist final coordinates immediately upon drop
+  flushSave();
   drag = null;
 }
 
 function onCancel() {
   if (!drag) return;
-  drag.card.x = drag.origX; drag.card.y = drag.origY;
-  drag.el.style.left = `${drag.origX}px`;
-  drag.el.style.top  = `${drag.origY}px`;
+  for (const item of drag.snapshots) {
+    item.card.x = item.origX;
+    item.card.y = item.origY;
+    item.el.style.left = `${item.origX}px`;
+    item.el.style.top  = `${item.origY}px`;
+  }
   window.removeEventListener('mousemove', onMove);
   drag = null;
 }
+
+// ─── Canvas Panning & Keyboard Shortcuts ──────────────────────────────────────
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space' && !e.repeat) {
+    if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    isSpacePressed = true;
+    if (!WALLPAPER && canvas) canvas.style.cursor = 'grab';
+  }
+  // Ctrl + 0: reset zoom
+  if (e.ctrlKey && e.key === '0') {
+    e.preventDefault();
+    resetCamera();
+  }
+  // Ctrl + = or Ctrl + +: zoom in
+  if (e.ctrlKey && (e.key === '=' || e.key === '+')) {
+    e.preventDefault();
+    setZoom(camera.zoom * 1.15);
+  }
+  // Ctrl + -: zoom out
+  if (e.ctrlKey && e.key === '-') {
+    e.preventDefault();
+    setZoom(camera.zoom / 1.15);
+  }
+  // Delete or Backspace to delete selected cards
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.size > 0) {
+    if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+    e.preventDefault();
+    for (const id of Array.from(selectedIds)) {
+      disconnectRO(id);
+      const el = world.querySelector(`.card[data-id="${id}"]`);
+      if (el) el.remove();
+    }
+    cards = cards.filter((c) => !selectedIds.has(c.id));
+    selectedIds.clear();
+    updateEmptyState();
+    flushSave();
+  }
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'Space') {
+    isSpacePressed = false;
+    if (!WALLPAPER && canvas && !panState) canvas.style.cursor = 'default';
+  }
+});
+
+if (canvas && !WALLPAPER) {
+  canvas.addEventListener('mousedown', (e) => {
+    const isCanvasBg = e.target === canvas || e.target === world;
+    // Middle-click OR Spacebar drag OR left click on empty canvas
+    if (e.button === 1 || (e.button === 0 && (isSpacePressed || isCanvasBg))) {
+      if (isCanvasBg && !isSpacePressed && e.button === 0) {
+        clearSelection();
+      }
+      e.preventDefault();
+      canvas.classList.add('is-panning');
+      panState = {
+        startX: e.clientX,
+        startY: e.clientY,
+        origCamX: camera.x,
+        origCamY: camera.y
+      };
+      window.addEventListener('mousemove', onPanMove);
+      window.addEventListener('mouseup',   onPanUp,   { once: true });
+    }
+  });
+
+  canvas.addEventListener('wheel', (e) => {
+    if (WALLPAPER) return;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    // Zoom on Ctrl+Wheel or direct background scroll
+    if (e.ctrlKey || e.target === canvas || e.target === world) {
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.08 : 0.92;
+      setZoom(camera.zoom * factor, mouseX, mouseY);
+    }
+  }, { passive: false });
+}
+
+function onPanMove(e) {
+  if (!panState) return;
+  camera.x = Math.round(panState.origCamX + e.clientX - panState.startX);
+  camera.y = Math.round(panState.origCamY + e.clientY - panState.startY);
+  applyCamera();
+}
+
+function onPanUp() {
+  if (!panState) return;
+  window.removeEventListener('mousemove', onPanMove);
+  canvas.classList.remove('is-panning');
+  canvas.style.cursor = isSpacePressed ? 'grab' : 'default';
+  panState = null;
+}
+
+// Zoom HUD buttons
+if (btnZoomIn) btnZoomIn.addEventListener('click', () => setZoom(camera.zoom * 1.2));
+if (btnZoomOut) btnZoomOut.addEventListener('click', () => setZoom(camera.zoom / 1.2));
+if (btnZoomReset) btnZoomReset.addEventListener('click', resetCamera);
 
 // ─── Toolbar events ───────────────────────────────────────────────────────────
 if (controls && !WALLPAPER) {
@@ -392,35 +628,34 @@ if (controls && !WALLPAPER) {
     if (type) {
       const card = newCard(type);
       cards.push(card);
-      // Append just the new card — don't re-render everything
       const el = buildCard(card);
       el.classList.add('card--entering');
-      canvas.appendChild(el);
+      world.appendChild(el);
+      selectCard(card.id, false);
       updateEmptyState();
-      flushSave(); // Immediate persist on new card creation
+      flushSave();
     }
     if (e.target.id === 'btn-save') flushSave();
   });
 }
 
-// Ensure unsaved input buffers are flushed before window unloads
+// Flush saves before window unloads
 window.addEventListener('beforeunload', () => {
   flushSave();
 });
 
 // ─── Main process state push ──────────────────────────────────────────────────
-// Uses reconcile() — NOT fullRender() — so existing cards are never destroyed
 window.dexpad.onStateUpdated((state) => {
   if (!state || !Array.isArray(state.cards)) return;
   cards = state.cards;
-  reconcile(); // ← key: in-place update, no DOM wipe
+  reconcile();
 });
 
 // ─── Initial boot ─────────────────────────────────────────────────────────────
 window.dexpad.getState()
   .then((state) => {
     cards = Array.isArray(state.cards) ? state.cards : [];
-    fullRender(); // One-time full render on startup
+    fullRender();
   })
   .catch((err) => {
     console.error('[DexPad] Failed to load state:', err);

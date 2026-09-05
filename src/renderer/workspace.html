@@ -25,13 +25,22 @@
       </nav>
     </header>
 
-    <main id="canvas" class="canvas" aria-label="Cards canvas"></main>
+    <main id="canvas" class="canvas" aria-label="Spatial canvas">
+      <div id="world" class="world"></div>
+    </main>
 
     <div id="empty-state" class="empty-state" aria-live="polite" hidden>
       <div class="empty-icon" aria-hidden="true">✦</div>
       <strong>Your desktop, organized.</strong>
-      <span>Add notes, todos, and links.<br>Everything is stored locally — no cloud.</span>
+      <span>Add notes, todos, and links on an infinite spatial canvas.<br>Pan with middle-click or spacebar drag. Stored 100% locally.</span>
     </div>
+
+    <aside id="zoom-hud" class="zoom-hud" aria-label="Canvas navigation">
+      <button type="button" id="btn-zoom-out" class="zoom-btn" title="Zoom out (Ctrl -)">−</button>
+      <span id="zoom-level" class="zoom-level">100%</span>
+      <button type="button" id="btn-zoom-in" class="zoom-btn" title="Zoom in (Ctrl +)">+</button>
+      <button type="button" id="btn-zoom-reset" class="zoom-btn reset" title="Reset view (Ctrl 0)">Reset</button>
+    </aside>
 
   </div>
   <script src="workspace.js"></script>

@@ -180,15 +180,37 @@ a { color: inherit; }
 .canvas {
   flex: 1 1 auto;
   position: relative;
-  overflow: auto;
+  overflow: hidden;
   /* Subtle dot grid — GPU-composited background, doesn't affect layout */
   background-image:
-    radial-gradient(circle, rgba(255,255,255,0.06) 1px, transparent 1px);
+    radial-gradient(circle, rgba(255,255,255,0.08) 1.2px, transparent 1.2px);
   background-size: 28px 28px;
   background-position: 14px 14px;
+  cursor: default;
 }
 
-/* ── Cards ───────────────────────────────────────────────────────────────── */
+.canvas.is-panning {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+/* ── World (Infinite Canvas Layer) ────────────────────────────────────────── */
+.world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.world > * {
+  pointer-events: auto;
+}
+
+/* ── Cards / Blocks ──────────────────────────────────────────────────────── */
 .card {
   position: absolute;
   min-width: 220px;
@@ -204,7 +226,14 @@ a { color: inherit; }
   display: flex;
   flex-direction: column;
   will-change: transform;
-  /* No animation by default — only new cards get card--entering */
+  transition: border-color var(--t-snap), box-shadow var(--t-snap);
+}
+
+.card--selected {
+  border-color: var(--ac-blue) !important;
+  box-shadow:
+    0 0 0 2px var(--ac-blue),
+    0 12px 40px rgba(0, 0, 0, 0.5) !important;
 }
 
 /* Entry animation — added by JS only when a card is newly created */
@@ -401,6 +430,62 @@ body:not(.wallpaper) .card { resize: both; }
   max-width: 220px;
 }
 
+/* ── Zoom HUD ────────────────────────────────────────────────────────────── */
+.zoom-hud {
+  position: absolute;
+  bottom: 18px;
+  right: 18px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 20px;
+  background: rgba(14, 18, 24, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--bd-card);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  user-select: none;
+}
+
+.zoom-btn {
+  background: transparent;
+  border: none;
+  color: var(--tx-base);
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  cursor: pointer;
+  font-weight: 600;
+  display: grid;
+  place-items: center;
+  transition: background 150ms ease;
+}
+
+.zoom-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.zoom-btn.reset {
+  width: auto;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--tx-muted);
+}
+
+.zoom-btn.reset:hover {
+  color: var(--tx-base);
+}
+
+.zoom-level {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--tx-base);
+  min-width: 40px;
+  text-align: center;
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    WALLPAPER MODE
    The BrowserWindow is now PANEL-SIZED (not full-screen), so the window IS
@@ -419,8 +504,13 @@ body.wallpaper .app-shell {
 
 body.wallpaper .toolbar,
 body.wallpaper .controls,
-body.wallpaper .empty-state {
-  display: none;
+body.wallpaper .empty-state,
+body.wallpaper .zoom-hud {
+  display: none !important;
+}
+
+body.wallpaper .world {
+  transform: none !important;
 }
 
 body.wallpaper .canvas {
