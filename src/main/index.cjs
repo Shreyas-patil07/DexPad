@@ -85,7 +85,7 @@ function getDesktopBounds() {
   const left = Math.min(...displays.map(d => d.bounds.x));
   const top = Math.min(...displays.map(d => d.bounds.y));
   const right = Math.max(...displays.map(d => d.bounds.x + d.bounds.width));
-  const bottom = Math.max(...displays.map(d => d.bounds.y + d.bounds.height);
+  const bottom = Math.max(...displays.map(d => d.bounds.y + d.bounds.height));
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
