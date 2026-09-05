@@ -1,51 +1,47 @@
-const $ = (id) => document.getElementById(id);
+'use strict';
+
+const id = (s) => document.getElementById(s);
 
 async function load() {
   try {
     const state = await window.dexpad.getState();
-    const startupEl = $('startup');
-    const wallpaperEl = $('wallpaper');
-    startupEl.checked = state.startup;
-    wallpaperEl.checked = state.wallpaperMode;
-    // Keep aria-checked in sync for screen readers
-    startupEl.setAttribute('aria-checked', String(state.startup));
-    wallpaperEl.setAttribute('aria-checked', String(state.wallpaperMode));
-    $('status').textContent = 'Ready';
+
+    id('chk-startup').checked  = state.startup;
+    id('chk-wallpaper').checked = state.wallpaperMode;
+
+    setStatus('Ready');
   } catch (err) {
     console.error('[DexPad] Failed to load settings:', err);
-    $('status').textContent = 'Failed to load settings';
+    setStatus('Failed to load settings');
   }
 }
 
-// Keep aria-checked in sync as the user toggles checkboxes
-for (const id of ['startup', 'wallpaper']) {
-  $(id)?.addEventListener('change', (e) => {
-    e.target.setAttribute('aria-checked', String(e.target.checked));
-  });
-}
-
-$('save').addEventListener('click', async () => {
-  $('status').textContent = 'Saving…';
+id('btn-save').addEventListener('click', async () => {
+  setStatus('Saving…');
   try {
     await window.dexpad.setState({
-      startup: $('startup').checked,
-      wallpaperMode: $('wallpaper').checked
+      startup:      id('chk-startup').checked,
+      wallpaperMode: id('chk-wallpaper').checked
     });
-    $('status').textContent = 'Saved ✓';
-    // Clear confirmation text after 2 seconds
-    setTimeout(() => { $('status').textContent = 'Ready'; }, 2000);
+    setStatus('Saved ✓');
+    setTimeout(() => setStatus('Ready'), 2000);
   } catch (err) {
     console.error('[DexPad] Failed to save settings:', err);
-    $('status').textContent = 'Failed to save';
+    setStatus('Failed to save');
   }
 });
 
-$('open').addEventListener('click', async () => {
+id('btn-open').addEventListener('click', async () => {
   try {
     await window.dexpad.openWorkspace();
   } catch (err) {
     console.error('[DexPad] Failed to open workspace:', err);
   }
 });
+
+function setStatus(text) {
+  const el = id('status');
+  if (el) el.textContent = text;
+}
 
 load();

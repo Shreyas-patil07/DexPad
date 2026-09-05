@@ -3,44 +3,53 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>DexPad Settings</title>
+  <title>DexPad — Settings</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="settings.css" />
 </head>
 <body>
-  <main class="panel">
-    <div class="header">
-      <div>
-        <div class="eyebrow">LOCAL DESKTOP WORKSPACE</div>
-        <h1>DexPad</h1>
-        <p>Your workspace stays on this computer — no accounts, no sync.</p>
-      </div>
-      <button id="open" type="button" class="secondary">Open workspace</button>
-    </div>
+  <main class="panel" role="main">
 
-    <section class="toggles" aria-label="Settings">
-      <label class="row">
-        <span>
+    <header class="s-header">
+      <div class="s-logo">
+        <span class="s-mark" aria-hidden="true">D</span>
+        <div>
+          <h1>DexPad</h1>
+          <p>Local desktop workspace — no account required.</p>
+        </div>
+      </div>
+      <button type="button" id="btn-open" class="btn-secondary">Open workspace</button>
+    </header>
+
+    <section class="s-section" aria-labelledby="prefs-heading">
+      <h2 id="prefs-heading" class="s-section-title">Preferences</h2>
+
+      <label class="s-row" for="chk-startup">
+        <span class="s-row-text">
           <strong>Start with Windows</strong>
           <small>Launch DexPad automatically when you sign in.</small>
         </span>
-        <input id="startup" type="checkbox" role="switch" aria-checked="false" />
+        <input type="checkbox" id="chk-startup" role="switch" />
       </label>
-      <label class="row">
-        <span>
+
+      <label class="s-row" for="chk-wallpaper">
+        <span class="s-row-text">
           <strong>Desktop Wallpaper</strong>
-          <small>Show your saved workspace behind the desktop icons.</small>
+          <small>Show your saved workspace behind your desktop icons.</small>
         </span>
-        <input id="wallpaper" type="checkbox" role="switch" aria-checked="false" />
+        <input type="checkbox" id="chk-wallpaper" role="switch" />
       </label>
     </section>
 
-    <div class="actions">
-      <span id="status" aria-live="polite">Loading…</span>
-      <button id="save" type="button">Save settings</button>
-    </div>
+    <footer class="s-footer">
+      <span id="status" class="s-status" aria-live="polite">Loading…</span>
+      <div class="s-actions">
+        <button type="button" id="btn-save" class="btn-primary">Save settings</button>
+      </div>
+    </footer>
+
   </main>
   <script src="settings.js"></script>
 </body>

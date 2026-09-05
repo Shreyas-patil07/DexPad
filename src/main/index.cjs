@@ -1,419 +1,441 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, Menu, Tray, nativeImage, shell } = require('electron');
+'use strict';
+
+const {
+  app, BrowserWindow, globalShortcut, ipcMain,
+  screen, Menu, Tray, nativeImage, shell
+} = require('electron');
 const path = require('node:path');
 const Store = require('electron-store');
 
-// note: win32-wallpaper.cjs throws at module-load time on non-Windows,
-// so we only require it when we're actually on win32.
+// ─── Platform guard ───────────────────────────────────────────────────────────
+// win32-wallpaper.cjs calls koffi at module load and will throw on non-Windows.
 let wallpaperApi = null;
 if (process.platform === 'win32') {
   try {
     wallpaperApi = require('./win32-wallpaper.cjs');
   } catch (err) {
-    console.error('[DexPad] Failed to load native wallpaper module:', err);
+    console.error('[DexPad] Failed to load native wallpaper module:', err.message);
   }
 }
 
-// --- Single-instance lock must be acquired BEFORE app.whenReady() ---
-// If a second instance starts, forward to the first and exit early.
+// ─── Single-instance lock ─────────────────────────────────────────────────────
+// MUST be called before app.whenReady(). If another instance is already
+// running, quit immediately and let the first instance handle focus.
 if (!app.requestSingleInstanceLock()) {
   app.quit();
   process.exit(0);
 }
 
+// ─── Persistent store ─────────────────────────────────────────────────────────
 const store = new Store({
   name: 'dexpad',
-  defaults: {
-    startup: true,
-    wallpaperMode: true,
-    cards: []
-  }
+  defaults: { startup: false, wallpaperMode: true, cards: [] }
 });
 
-let workspaceWindow = null;
-let settingsWindow = null;
-let tray = null;
-let desktopWindow = null;
-let shuttingDown = false;
+// ─── State ────────────────────────────────────────────────────────────────────
+let workspaceWin = null;   // Normal panel window (control mode)
+let desktopWin   = null;   // Desktop-embedded window (wallpaper mode)
+let settingsWin  = null;
+let tray         = null;
+let quitting     = false;
 
-const workspaceFile = path.join(__dirname, '../renderer/workspace.html');
+const RENDERER = path.join(__dirname, '../renderer');
+const WORKSPACE_HTML = path.join(RENDERER, 'workspace.html');
+const PRELOAD = path.join(__dirname, '../preload/preload.cjs');
 
-function getPrimaryWorkArea() {
-  return screen.getPrimaryDisplay().workArea;
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
+
+/** Bounds for the floating control-mode panel (right edge, vertically centred). */
+function controlBounds() {
+  const wa = screen.getPrimaryDisplay().workArea;
+  const w  = Math.min(740, Math.round(wa.width  * 0.42));
+  const h  = Math.min(780, Math.round(wa.height * 0.88));
+  return { x: wa.x + wa.width - w, y: wa.y + Math.round((wa.height - h) / 2), width: w, height: h };
 }
 
-function getPanelBounds() {
-  const workArea = getPrimaryWorkArea();
-  const width = Math.min(720, Math.round(workArea.width * 0.42));
-  const height = Math.min(760, Math.round(workArea.height * 0.82));
+/**
+ * Bounds for the wallpaper-mode window.
+ * KEY CHANGE: the window is PANEL-SIZED, not full-screen.
+ * This eliminates cropping — the window IS the panel, no CSS magic needed.
+ */
+function wallpaperPanelBounds() {
+  const d  = screen.getPrimaryDisplay();
+  const w  = Math.min(740, Math.round(d.bounds.width  * 0.42));
+  const h  = Math.min(780, Math.round(d.bounds.height * 0.88));
   return {
-    x: workArea.x + workArea.width - width,
-    y: workArea.y + Math.round((workArea.height - height) / 2),
-    width,
-    height
+    x: d.bounds.x + d.bounds.width - w,
+    y: d.bounds.y + Math.round((d.bounds.height - h) / 2),
+    width: w, height: h
   };
 }
 
-// Wallpaper is a full-display transparent host. The renderer draws the
-// visible DexPad panel inside it so the rest of the user's desktop is never cropped.
-function getWallpaperBounds() {
-  return screen.getPrimaryDisplay().bounds;
-}
+// ─── Card helpers ─────────────────────────────────────────────────────────────
 
-function normalizeCard(card, index = 0) {
+function normalizeCard(card, i = 0) {
   if (!card || typeof card !== 'object') return null;
   const type = ['note', 'todo', 'link'].includes(card.type) ? card.type : 'note';
   return {
-    id: typeof card.id === 'string' && card.id ? card.id : `card-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    id:     typeof card.id === 'string' && card.id
+              ? card.id
+              : `card-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
     type,
-    title: typeof card.title === 'string' ? card.title.slice(0, 200) : '',
-    body: typeof card.body === 'string' ? card.body.slice(0, 10000) : '',
-    url: typeof card.url === 'string' ? card.url.slice(0, 2000) : '',
-    done: Boolean(card.done),
-    x: Number.isFinite(card.x) ? Math.max(0, Math.round(card.x)) : 40 + (index % 3) * 300,
-    y: Number.isFinite(card.y) ? Math.max(0, Math.round(card.y)) : 40 + Math.floor(index / 3) * 220,
-    width: Number.isFinite(card.width) ? Math.max(220, Math.min(520, Math.round(card.width))) : 280,
+    title:  typeof card.title === 'string' ? card.title.slice(0, 200)   : '',
+    body:   typeof card.body  === 'string' ? card.body.slice(0, 10000)  : '',
+    url:    typeof card.url   === 'string' ? card.url.slice(0, 2000)    : '',
+    done:   Boolean(card.done),
+    x:      Number.isFinite(card.x)      ? Math.max(0, Math.round(card.x))                  : 20 + (i % 2) * 340,
+    y:      Number.isFinite(card.y)      ? Math.max(0, Math.round(card.y))                  : 20 + Math.floor(i / 2) * 220,
+    width:  Number.isFinite(card.width)  ? Math.max(220, Math.min(520, Math.round(card.width)))  : 300,
     height: Number.isFinite(card.height) ? Math.max(140, Math.min(520, Math.round(card.height))) : 180
   };
 }
 
 function getCards() {
-  const cards = store.get('cards');
-  return Array.isArray(cards) ? cards.map(normalizeCard).filter(Boolean) : [];
+  const raw = store.get('cards');
+  return Array.isArray(raw) ? raw.map(normalizeCard).filter(Boolean) : [];
+}
+
+// ─── State broadcast ──────────────────────────────────────────────────────────
+
+function currentState() {
+  return { startup: store.get('startup'), wallpaperMode: store.get('wallpaperMode'), cards: getCards() };
 }
 
 function publishState() {
-  if (shuttingDown) return;
-  const state = { startup: store.get('startup'), wallpaperMode: store.get('wallpaperMode'), cards: getCards() };
-  for (const win of [workspaceWindow, desktopWindow]) {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('dexpad:state-updated', state);
-    }
+  if (quitting) return;
+  const state = currentState();
+  for (const win of [workspaceWin, desktopWin]) {
+    if (win && !win.isDestroyed()) win.webContents.send('dexpad:state-updated', state);
   }
 }
 
+// ─── Card persistence ─────────────────────────────────────────────────────────
+
 function saveCards(cards) {
-  const normalized = Array.isArray(cards)
-    ? cards.map(normalizeCard).filter(Boolean)
-    : [];
+  const normalized = Array.isArray(cards) ? cards.map(normalizeCard).filter(Boolean) : [];
   store.set('cards', normalized);
   publishState();
   return normalized;
 }
 
-function setStartup(enabled) {
+// ─── Startup registration ─────────────────────────────────────────────────────
+
+function applyStartup(enabled) {
   store.set('startup', enabled);
-  // note: openAtLogin registers DexPad to launch at Windows sign-in
+  // note: openAtLogin registers DexPad in the Windows run key
   app.setLoginItemSettings({ openAtLogin: enabled, args: ['--hidden'] });
 }
 
-function createWorkspaceWindow() {
-  if (workspaceWindow && !workspaceWindow.isDestroyed()) {
-    workspaceWindow.setBounds(getPanelBounds());
-    workspaceWindow.show();
-    workspaceWindow.focus();
-    return workspaceWindow;
+// ─── Control window ───────────────────────────────────────────────────────────
+
+function showControlWindow() {
+  if (workspaceWin && !workspaceWin.isDestroyed()) {
+    // Only focus — do NOT reset bounds so user's repositioned window stays put
+    if (!workspaceWin.isVisible()) workspaceWin.show();
+    workspaceWin.focus();
+    return workspaceWin;
   }
+  return createControlWindow();
+}
 
-  const bounds = getPanelBounds();
-  workspaceWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    show: false,
-    frame: true,
-    resizable: true,
-    // Allow the user to reposition the panel window freely
-    movable: true,
-    focusable: true,
+function createControlWindow() {
+  const bounds = controlBounds();
+  workspaceWin = new BrowserWindow({
+    ...bounds,
+    show:        false,
+    frame:       true,
+    resizable:   true,
+    movable:     true,          // user can freely drag the panel
+    minimizable: true,
+    maximizable: false,
+    focusable:   true,
     skipTaskbar: false,
-    backgroundColor: '#0b0d10',
-    webPreferences: {
-      contextIsolation: true,
-      sandbox: true,
-      preload: path.join(__dirname, '../preload/preload.cjs')
-    }
+    title:       'DexPad',
+    backgroundColor: '#090b0e',
+    webPreferences: { contextIsolation: true, sandbox: true, preload: PRELOAD }
   });
-  workspaceWindow.loadFile(workspaceFile, { search: 'mode=control' }).catch((err) => {
-    console.error('[DexPad] Failed to load workspace:', err);
+
+  workspaceWin.setMenuBarVisibility(false);
+
+  workspaceWin.loadFile(WORKSPACE_HTML, { search: 'mode=control' }).catch((e) => {
+    console.error('[DexPad] Failed to load workspace:', e.message);
   });
-  workspaceWindow.once('ready-to-show', () => {
-    workspaceWindow.setBounds(getPanelBounds());
-    workspaceWindow.show();
-    workspaceWindow.focus();
+
+  // Show once fully rendered to avoid a white flash
+  workspaceWin.once('ready-to-show', () => {
+    workspaceWin.show();
+    workspaceWin.focus();
   });
-  workspaceWindow.on('closed', () => { workspaceWindow = null; });
-  return workspaceWindow;
+
+  workspaceWin.on('closed', () => { workspaceWin = null; });
+  return workspaceWin;
 }
 
-// Retry up to MAX_ATTACH_RETRIES times if Progman hasn't initialised yet.
-// attachInProgress prevents concurrent retries when both did-finish-load
-// and ready-to-show fire near-simultaneously.
-const MAX_ATTACH_RETRIES = 5;
-const ATTACH_RETRY_MS = 800;
-let attachRetries = 0;
-let attachInProgress = false;
+// ─── Wallpaper / desktop window ───────────────────────────────────────────────
 
-function showDesktopWallpaper() {
-  if (!desktopWindow || desktopWindow.isDestroyed() || !wallpaperApi) return;
-  if (attachInProgress) return; // another retry chain is already running
-  attachInProgress = true;
-  _tryAttach();
+// Attachment retry state — one chain at a time
+const ATTACH_MAX   = 6;
+const ATTACH_DELAY = 1000; // ms between retries
+let attachTries    = 0;
+let attachBusy     = false;
+
+function attachWallpaper() {
+  if (!desktopWin || desktopWin.isDestroyed() || !wallpaperApi) return;
+  if (attachBusy) return;   // only one chain at a time
+  attachBusy = true;
+  _doAttach();
 }
 
-function _tryAttach() {
-  if (!desktopWindow || desktopWindow.isDestroyed()) {
-    attachInProgress = false;
-    attachRetries = 0;
-    return;
+function _doAttach() {
+  if (!desktopWin || desktopWin.isDestroyed()) {
+    attachBusy = false; attachTries = 0; return;
   }
   try {
-    const bounds = getWallpaperBounds();
-    desktopWindow.setBounds(bounds);
-    wallpaperApi.attachToDesktop(desktopWindow, bounds);
-    wallpaperApi.setClickThrough(desktopWindow, true);
-    desktopWindow.setIgnoreMouseEvents(true);
-    desktopWindow.showInactive();
-    wallpaperApi.sendToBottom(desktopWindow);
-    attachRetries = 0;
-    attachInProgress = false;
+    const bounds = wallpaperPanelBounds();
+    desktopWin.setBounds(bounds);
+    // note: attachToDesktop embeds the window into WorkerW (the Windows
+    // desktop layer that sits behind icons). The window is panel-sized so
+    // the whole window IS the DexPad panel — no CSS cropping possible.
+    wallpaperApi.attachToDesktop(desktopWin, bounds);
+    wallpaperApi.setClickThrough(desktopWin, true);
+    desktopWin.setIgnoreMouseEvents(true);
+    desktopWin.showInactive();
+    wallpaperApi.sendToBottom(desktopWin);
+    attachTries = 0;
+    attachBusy  = false;
+    console.log('[DexPad] Wallpaper panel attached to desktop.');
   } catch (err) {
-    if (attachRetries < MAX_ATTACH_RETRIES) {
-      attachRetries++;
-      console.warn(`[DexPad] WorkerW attach failed (attempt ${attachRetries}/${MAX_ATTACH_RETRIES}), retrying in ${ATTACH_RETRY_MS}ms…`);
-      setTimeout(_tryAttach, ATTACH_RETRY_MS);
+    if (attachTries < ATTACH_MAX) {
+      attachTries++;
+      console.warn(`[DexPad] Wallpaper attach attempt ${attachTries}/${ATTACH_MAX} failed, retrying…`);
+      setTimeout(_doAttach, ATTACH_DELAY);
     } else {
-      // All retries exhausted — wallpaper mode can't attach to WorkerW in
-      // this session. Disable wallpaper mode and open the normal panel window
-      // so the user always has a visible UI to work with.
-      console.error('[DexPad] WorkerW attachment permanently failed. Falling back to control window.', err);
-      attachRetries = 0;
-      attachInProgress = false;
+      console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.', err.message);
+      attachTries = 0;
+      attachBusy  = false;
+      // Graceful fallback: disable wallpaper mode, open normal panel
       store.set('wallpaperMode', false);
       destroyDesktopWindow();
-      rebuildTrayMenu();
-      setControlWindowOpen(true);
+      rebuildTray();
+      showControlWindow();
     }
   }
 }
 
 function createDesktopWindow() {
-  if (process.platform !== 'win32' || !wallpaperApi) return null;
-  const bounds = getWallpaperBounds();
-  if (desktopWindow && !desktopWindow.isDestroyed()) {
-    desktopWindow.setBounds(bounds);
-    showDesktopWallpaper();
-    return desktopWindow;
+  if (process.platform !== 'win32' || !wallpaperApi) {
+    // On non-Windows, silently fall back to control mode
+    store.set('wallpaperMode', false);
+    showControlWindow();
+    return null;
+  }
+  if (desktopWin && !desktopWin.isDestroyed()) {
+    attachWallpaper();
+    return desktopWin;
   }
 
-  desktopWindow = new BrowserWindow({
-    x: bounds.x,
-    y: bounds.y,
-    width: bounds.width,
-    height: bounds.height,
-    show: false,
-    frame: false,
+  const bounds = wallpaperPanelBounds();
+  desktopWin = new BrowserWindow({
+    ...bounds,
+    show:        false,
+    frame:       false,
+    // transparent: true gives us proper rounded corners (CSS border-radius
+    // punches through to the real desktop wallpaper image below)
     transparent: true,
-    resizable: false,
-    movable: false,
-    focusable: false,
+    resizable:   false,
+    movable:     false,
+    focusable:   false,
     skipTaskbar: true,
-    hasShadow: false,
+    hasShadow:   false,
     backgroundColor: '#00000000',
-    webPreferences: {
-      contextIsolation: true,
-      sandbox: true,
-      preload: path.join(__dirname, '../preload/preload.cjs')
-    }
+    webPreferences: { contextIsolation: true, sandbox: true, preload: PRELOAD }
   });
-  desktopWindow.setMenu(null);
-  desktopWindow.setIgnoreMouseEvents(true);
-  desktopWindow.loadFile(workspaceFile, { search: 'mode=wallpaper' }).catch((err) => {
-    console.warn('[DexPad] Failed to load wallpaper view:', err);
+
+  desktopWin.setMenu(null);
+  desktopWin.setIgnoreMouseEvents(true);
+
+  desktopWin.loadFile(WORKSPACE_HTML, { search: 'mode=wallpaper' }).catch((e) => {
+    console.warn('[DexPad] Failed to load wallpaper view:', e.message);
   });
-  // Attach to WorkerW both on did-finish-load and ready-to-show for reliability
-  desktopWindow.webContents.on('did-finish-load', showDesktopWallpaper);
-  desktopWindow.once('ready-to-show', showDesktopWallpaper);
-  desktopWindow.on('closed', () => { desktopWindow = null; });
-  return desktopWindow;
+
+  // Use a single trigger point — did-finish-load is the most reliable
+  desktopWin.webContents.once('did-finish-load', () => {
+    // Small delay lets the renderer finish painting before we attach
+    setTimeout(attachWallpaper, 150);
+  });
+
+  desktopWin.on('closed', () => { desktopWin = null; });
+  return desktopWin;
 }
 
 function destroyDesktopWindow() {
-  if (!desktopWindow || desktopWindow.isDestroyed()) return;
+  if (!desktopWin || desktopWin.isDestroyed()) return;
+  attachBusy  = false;
+  attachTries = 0;
   if (wallpaperApi) {
-    try { wallpaperApi.detachFromDesktop(desktopWindow); } catch (err) { console.warn('[DexPad] detach warning:', err); }
+    try { wallpaperApi.detachFromDesktop(desktopWin); } catch (_) { /* best effort */ }
   }
-  desktopWindow.destroy();
-  desktopWindow = null;
+  desktopWin.destroy();
+  desktopWin = null;
 }
 
 function refreshWallpaper() {
   if (!store.get('wallpaperMode') || process.platform !== 'win32') return false;
-  if (!desktopWindow || desktopWindow.isDestroyed()) {
+  if (!desktopWin || desktopWin.isDestroyed()) {
     createDesktopWindow();
     return true;
   }
-  // Push the current state to the existing wallpaper window
-  desktopWindow.webContents.send('dexpad:state-updated', {
-    startup: store.get('startup'),
-    wallpaperMode: store.get('wallpaperMode'),
-    cards: getCards()
-  });
-  showDesktopWallpaper();
+  publishState();
+  attachWallpaper();
   return true;
 }
 
-function setControlWindowOpen(enabled) {
-  if (enabled) {
-    const win = createWorkspaceWindow();
-    win.setBounds(getPanelBounds());
-    win.show();
-    win.focus();
-  } else if (workspaceWindow && !workspaceWindow.isDestroyed()) {
-    workspaceWindow.hide();
-  }
-}
+// ─── Mode switching ───────────────────────────────────────────────────────────
 
 function setWallpaperMode(enabled) {
   store.set('wallpaperMode', enabled);
   if (enabled) {
-    if (!desktopWindow || desktopWindow.isDestroyed()) createDesktopWindow();
-    if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.hide();
+    if (!desktopWin || desktopWin.isDestroyed()) createDesktopWindow();
+    // Hide control window — user sees the desktop widget instead
+    if (workspaceWin && !workspaceWin.isDestroyed()) workspaceWin.hide();
   } else {
     destroyDesktopWindow();
-    setControlWindowOpen(true);
+    showControlWindow();
   }
-  // publishState() is called here — subscribers see the new wallpaperMode value
   publishState();
-  rebuildTrayMenu();
+  rebuildTray();
+}
+
+// ─── Tray ─────────────────────────────────────────────────────────────────────
+
+function buildTrayIcon() {
+  // Try to load an icon file; fall back to empty (Windows will show a blank icon)
+  const iconPath = path.join(RENDERER, 'icon.ico');
+  try {
+    const img = nativeImage.createFromPath(iconPath);
+    if (!img.isEmpty()) return img;
+  } catch (_) { /* no icon file */ }
+  return nativeImage.createEmpty();
 }
 
 function createTray() {
-  if (tray) return tray;
-
-  let icon = nativeImage.createEmpty();
-  const iconPath = path.join(__dirname, '../renderer/icon.ico');
-  try {
-    icon = nativeImage.createFromPath(iconPath);
-  } catch (err) {
-    console.warn('[DexPad] Tray icon unavailable, using empty icon:', err.message);
-  }
-
-  tray = new Tray(icon);
-  tray.setToolTip('DexPad');
-  tray.on('click', () => setControlWindowOpen(true));
-  rebuildTrayMenu();
-  return tray;
+  if (tray) return;
+  tray = new Tray(buildTrayIcon());
+  tray.setToolTip('DexPad — right-click for options');
+  tray.on('click', () => showControlWindow());
+  rebuildTray();
 }
 
-function rebuildTrayMenu() {
+function rebuildTray() {
   if (!tray) return;
   const wallpaper = store.get('wallpaperMode');
   tray.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Open DexPad', click: () => setControlWindowOpen(true) },
-    { label: 'Refresh Wallpaper', click: refreshWallpaper },
-    { type: 'separator' },
-    { label: 'Desktop Wallpaper', type: 'checkbox', checked: wallpaper, click: () => setWallpaperMode(!wallpaper) },
-    { label: 'Settings', click: createSettingsWindow },
-    { type: 'separator' },
-    { label: 'Quit DexPad', click: quitApp }
+    { label: 'Open DexPad',        click: () => showControlWindow() },
+    { label: 'Refresh Wallpaper',  click: () => refreshWallpaper()  },
+    { type:  'separator' },
+    {
+      label:   'Desktop Wallpaper',
+      type:    'checkbox',
+      checked: wallpaper,
+      click:   () => setWallpaperMode(!wallpaper)
+    },
+    { label: 'Settings', click: () => showSettingsWindow() },
+    { type:  'separator' },
+    { label: 'Quit DexPad', click: () => quitApp() }
   ]));
 }
 
-function createSettingsWindow() {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
-    settingsWindow.show();
-    settingsWindow.focus();
-    return settingsWindow;
+// ─── Settings window ──────────────────────────────────────────────────────────
+
+function showSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.show();
+    settingsWin.focus();
+    return;
   }
-  settingsWindow = new BrowserWindow({
-    width: 520,
-    height: 420,
+  settingsWin = new BrowserWindow({
+    width: 520, height: 440,
     resizable: false,
+    minimizable: false,
     title: 'DexPad Settings',
-    webPreferences: {
-      preload: path.join(__dirname, '../preload/preload.cjs'),
-      contextIsolation: true,
-      sandbox: true
-    }
+    backgroundColor: '#090b0e',
+    webPreferences: { contextIsolation: true, sandbox: true, preload: PRELOAD }
   });
-  settingsWindow.loadFile(path.join(__dirname, '../renderer/settings.html'));
-  settingsWindow.on('closed', () => { settingsWindow = null; });
-  return settingsWindow;
+  settingsWin.setMenuBarVisibility(false);
+  settingsWin.loadFile(path.join(RENDERER, 'settings.html'));
+  settingsWin.on('closed', () => { settingsWin = null; });
 }
 
+// ─── Quit ─────────────────────────────────────────────────────────────────────
+
 function quitApp() {
-  shuttingDown = true;
+  quitting = true;
   globalShortcut.unregisterAll();
   destroyDesktopWindow();
-  if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.destroy();
-  if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
+  workspaceWin?.destroy();
+  settingsWin?.destroy();
+  tray?.destroy();
   app.quit();
 }
 
-// --- IPC handlers ---
+// ─── IPC handlers ────────────────────────────────────────────────────────────
 
-ipcMain.handle('dexpad:get-state', () => ({
-  startup: store.get('startup'),
-  wallpaperMode: store.get('wallpaperMode'),
-  cards: getCards()
-}));
+ipcMain.handle('dexpad:get-state',  ()            => currentState());
+ipcMain.handle('dexpad:save-cards', (_, cards)    => saveCards(cards));
+ipcMain.handle('dexpad:refresh-wallpaper', ()     => refreshWallpaper());
+ipcMain.handle('dexpad:open-workspace',    ()     => { showControlWindow(); return true; });
 
-ipcMain.handle('dexpad:save-cards', (_event, cards) => saveCards(cards));
-
-ipcMain.handle('dexpad:set-state', (_event, state) => {
-  if (typeof state?.startup === 'boolean') setStartup(state.startup);
-  if (typeof state?.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
-  return {
-    startup: store.get('startup'),
-    wallpaperMode: store.get('wallpaperMode'),
-    cards: getCards()
-  };
-});
-
-ipcMain.handle('dexpad:open-workspace', () => {
-  setControlWindowOpen(true);
-  return true;
-});
-
-ipcMain.handle('dexpad:refresh-wallpaper', () => refreshWallpaper());
-
-ipcMain.handle('dexpad:open-url', (_event, url) => {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
-    throw new Error('Only http(s) URLs are allowed.');
-  }
+ipcMain.handle('dexpad:open-url', (_, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url))
+    throw new Error('Only http(s) URLs are permitted.');
   return shell.openExternal(url);
 });
 
-// --- App lifecycle ---
-
-app.whenReady().then(() => {
-  setStartup(store.get('startup'));
-  // note: Ctrl+Alt+D (or Cmd+Alt+D on Mac) opens the workspace panel
-  globalShortcut.register('CommandOrControl+Alt+D', () => setControlWindowOpen(true));
-  createTray();
-
-  if (store.get('wallpaperMode')) createDesktopWindow();
-  else createWorkspaceWindow();
-
-  // Re-position windows whenever display configuration changes
-  const refresh = () => {
-    if (shuttingDown) return;
-    if (store.get('wallpaperMode')) refreshWallpaper();
-    else if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.setBounds(getPanelBounds());
-  };
-  screen.on('display-metrics-changed', refresh);
-  screen.on('display-added', refresh);
-  screen.on('display-removed', refresh);
+ipcMain.handle('dexpad:set-state', (_, state) => {
+  if (typeof state?.startup      === 'boolean') applyStartup(state.startup);
+  if (typeof state?.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
+  return currentState();
 });
 
-// Bring existing window to front when a second instance tries to launch
-app.on('second-instance', () => setControlWindowOpen(true));
+// ─── App lifecycle ────────────────────────────────────────────────────────────
 
-// Prevent Electron from quitting when the last window is closed — we live in the tray
-app.on('window-all-closed', (event) => event.preventDefault());
+app.whenReady().then(() => {
+  applyStartup(store.get('startup'));
+
+  // Global hotkey: Ctrl+Alt+D opens the control panel from anywhere
+  globalShortcut.register('CommandOrControl+Alt+D', () => showControlWindow());
+
+  createTray();
+
+  // Respect --hidden flag (used when launched at Windows startup)
+  const hidden = process.argv.includes('--hidden');
+
+  if (store.get('wallpaperMode')) {
+    createDesktopWindow();
+    if (!hidden) showControlWindow(); // also open control panel on first launch
+  } else {
+    if (!hidden) showControlWindow();
+  }
+
+  // Re-attach/reposition when display configuration changes
+  screen.on('display-metrics-changed', onDisplayChange);
+  screen.on('display-added',           onDisplayChange);
+  screen.on('display-removed',         onDisplayChange);
+});
+
+function onDisplayChange() {
+  if (quitting) return;
+  if (store.get('wallpaperMode')) refreshWallpaper();
+  // Don't move the control window automatically — user may have placed it
+}
+
+// Bring the existing instance to the front when a second one tries to launch
+app.on('second-instance', () => showControlWindow());
+
+// DexPad lives in the tray, so prevent normal quit when all windows close
+app.on('window-all-closed', (e) => e.preventDefault());
 
 app.on('before-quit', () => {
-  shuttingDown = true;
+  quitting = true;
   globalShortcut.unregisterAll();
 });

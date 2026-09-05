@@ -1,160 +1,168 @@
-const params = new URLSearchParams(window.location.search);
-const wallpaper = params.get('mode') === 'wallpaper';
-const $ = (id) => document.getElementById(id);
-const canvas = $('canvas');
-const empty = $('empty');
-const controls = $('controls');
-const modeLabel = $('mode-label');
+'use strict';
 
-let cards = [];
-let saveTimer = null;
-let drag = null;
+// ─── Mode detection ───────────────────────────────────────────────────────────
+const MODE     = new URLSearchParams(window.location.search).get('mode') ?? 'control';
+const WALLPAPER = MODE === 'wallpaper';
 
-// Track all active ResizeObservers by card id so we can disconnect
-// them before re-rendering, preventing zombie observer callbacks.
-const observers = new Map();
-
-if (wallpaper) {
+if (WALLPAPER) {
   document.body.classList.add('wallpaper');
-  if (modeLabel) modeLabel.textContent = 'Desktop wallpaper';
+  const label = document.getElementById('mode-label');
+  if (label) label.textContent = 'Desktop widget';
 }
 
-// ── Utilities ──────────────────────────────────────────────────────────────
+// ─── DOM refs ─────────────────────────────────────────────────────────────────
+const canvas     = document.getElementById('canvas');
+const emptyState = document.getElementById('empty-state');
+const controls   = document.getElementById('controls');
 
+// ─── App state ────────────────────────────────────────────────────────────────
+let cards     = [];   // card data array (source of truth)
+let saveTimer = null; // debounce handle
+
+// ResizeObserver map: card.id → ResizeObserver instance
+// Tracked so we can disconnect them before re-rendering (prevents zombie callbacks)
+const resizeObservers = new Map();
+
+// Drag state
+let drag = null; // { card, el, startX, startY, origX, origY }
+
+// ─── Unique ID ────────────────────────────────────────────────────────────────
 function uid() {
   return `card-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// ─── New card template ────────────────────────────────────────────────────────
 function newCard(type) {
-  const index = cards.length;
+  const col = cards.length % 2;
+  const row = Math.floor(cards.length / 2);
   return {
-    id: uid(),
+    id:     uid(),
     type,
-    title: type === 'note' ? 'New note' : type === 'todo' ? 'New task' : 'New link',
-    body: type === 'note' ? 'Write something…' : '',
-    url: type === 'link' ? 'https://' : '',
-    done: false,
-    x: 40 + (index % 3) * 300,
-    y: 40 + Math.floor(index / 3) * 220,
-    width: 280,
-    height: type === 'note' ? 190 : 160
+    title:  type === 'note' ? 'New note' : type === 'todo' ? 'New task' : 'New link',
+    body:   type === 'note' ? '' : '',
+    url:    type === 'link' ? 'https://' : '',
+    done:   false,
+    x:      20 + col * 340,
+    y:      20 + row * 220,
+    width:  300,
+    height: type === 'note' ? 200 : 165
   };
 }
 
-// ── Persistence ────────────────────────────────────────────────────────────
+// ─── Persistence ──────────────────────────────────────────────────────────────
 
-// Debounce saves: wait 600 ms after the last change before writing to disk.
-// This prevents hammering the main process on every keystroke.
+// Debounce: wait 600ms after the last edit before writing to disk.
+// This stops hammering the main process on every keystroke.
 function scheduleSave() {
-  if (wallpaper) return;
+  if (WALLPAPER) return; // wallpaper window is read-only
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(save, 600);
+  saveTimer = setTimeout(flushSave, 600);
 }
 
-async function save() {
-  if (wallpaper) return;
+async function flushSave() {
+  if (WALLPAPER) return;
   clearTimeout(saveTimer);
   try {
-    // saveCards returns the server-normalised card array; update in place
-    // without re-rendering so the user never loses focus on a text input.
+    // saveCards returns the normalised array; merge values in-place so we
+    // don't trigger a re-render and lose the user's cursor / focus position.
     const saved = await window.dexpad.saveCards(cards);
-    // Merge server-normalised values back without touching the DOM
-    for (const serverCard of saved) {
-      const local = cards.find((c) => c.id === serverCard.id);
-      if (local) Object.assign(local, serverCard);
+    for (const s of saved) {
+      const local = cards.find((c) => c.id === s.id);
+      if (local) Object.assign(local, s);
     }
   } catch (err) {
-    console.error('[DexPad] Failed to save workspace:', err);
+    console.error('[DexPad] Save failed:', err);
   }
 }
 
-// ── Card data helpers ──────────────────────────────────────────────────────
+// ─── Card data helpers ────────────────────────────────────────────────────────
 
-function updateCard(id, patch) {
+function patchCard(id, patch) {
   const card = cards.find((c) => c.id === id);
   if (!card) return;
   Object.assign(card, patch);
   scheduleSave();
 }
 
-// ── Resize observation ─────────────────────────────────────────────────────
+function deleteCard(id) {
+  disconnectObserver(id);
+  cards = cards.filter((c) => c.id !== id);
+  scheduleSave();
+  render();
+}
 
-function attachResizeObserver(element, card) {
-  if (wallpaper || typeof ResizeObserver !== 'function') return;
+// ─── ResizeObserver management ────────────────────────────────────────────────
 
-  // Disconnect any existing observer for this card to avoid leaks
-  detachResizeObserver(card.id);
+function connectObserver(el, card) {
+  if (WALLPAPER || typeof ResizeObserver === 'undefined') return;
+  disconnectObserver(card.id); // clean up any existing observer first
 
-  const observer = new ResizeObserver((entries) => {
-    const rect = entries[0]?.contentRect;
-    if (!rect) return;
-    const width = Math.max(220, Math.min(520, Math.round(rect.width)));
-    const height = Math.max(140, Math.min(520, Math.round(rect.height)));
-    if (card.width !== width || card.height !== height) {
-      card.width = width;
-      card.height = height;
+  const ro = new ResizeObserver(([entry]) => {
+    if (!entry) return;
+    const { width, height } = entry.contentRect;
+    const w = Math.max(220, Math.min(520, Math.round(width)));
+    const h = Math.max(140, Math.min(520, Math.round(height)));
+    if (card.width !== w || card.height !== h) {
+      card.width  = w;
+      card.height = h;
       scheduleSave();
     }
   });
-  observer.observe(element);
-  observers.set(card.id, observer);
+  ro.observe(el);
+  resizeObservers.set(card.id, ro);
 }
 
-function detachResizeObserver(cardId) {
-  const existing = observers.get(cardId);
-  if (existing) {
-    existing.disconnect();
-    observers.delete(cardId);
-  }
+function disconnectObserver(cardId) {
+  const ro = resizeObservers.get(cardId);
+  if (ro) { ro.disconnect(); resizeObservers.delete(cardId); }
 }
 
 function disconnectAllObservers() {
-  for (const observer of observers.values()) observer.disconnect();
-  observers.clear();
+  for (const ro of resizeObservers.values()) ro.disconnect();
+  resizeObservers.clear();
 }
 
-// ── DOM: card building ─────────────────────────────────────────────────────
+// ─── Card DOM construction ────────────────────────────────────────────────────
 
-function createCardElement(card) {
+function buildCard(card) {
+  // ── Wrapper ──
   const el = document.createElement('article');
-  el.className = 'card';
-  el.dataset.id = card.id;
-  el.style.left = `${card.x}px`;
-  el.style.top = `${card.y}px`;
+  el.className   = 'card';
+  el.dataset.id  = card.id;
+  el.style.left  = `${card.x}px`;
+  el.style.top   = `${card.y}px`;
   el.style.width = `${card.width}px`;
-  el.style.height = `${card.height}px`;
+  if (!WALLPAPER) el.style.height = `${card.height}px`;
 
-  // ── Card header ──
+  // ── Header ──
   const head = document.createElement('div');
   head.className = 'card-head';
 
   const typeLabel = document.createElement('span');
-  typeLabel.className = 'type';
+  typeLabel.className   = 'card-type';
   typeLabel.textContent = card.type;
   head.appendChild(typeLabel);
 
-  if (!wallpaper) {
-    const del = document.createElement('button');
-    del.className = 'delete';
-    del.type = 'button';
-    del.textContent = '×';
-    del.title = 'Delete card';
-    del.setAttribute('aria-label', 'Delete card');
-    del.addEventListener('click', (e) => {
+  if (!WALLPAPER) {
+    const delBtn = document.createElement('button');
+    delBtn.className  = 'card-delete';
+    delBtn.type       = 'button';
+    delBtn.title      = 'Delete card';
+    delBtn.setAttribute('aria-label', 'Delete this card');
+    delBtn.textContent = '×';
+    delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      detachResizeObserver(card.id);
-      cards = cards.filter((c) => c.id !== card.id);
-      scheduleSave();
-      render();
+      deleteCard(card.id);
     });
-    head.appendChild(del);
+    head.appendChild(delBtn);
 
-    // Start drag only when clicking the header itself, not its buttons/inputs
+    // Drag: only start if click lands on the header itself (not a child button)
     head.addEventListener('mousedown', (e) => startDrag(e, card, el));
   }
+
   el.appendChild(head);
 
-  // ── Card body ──
+  // ── Body ──
   const body = document.createElement('div');
   body.className = 'card-body';
 
@@ -162,156 +170,164 @@ function createCardElement(card) {
     const row = document.createElement('label');
     row.className = 'todo-row';
 
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = card.done;
-    check.disabled = wallpaper;
-    // note: `change` fires after the browser has applied the new checked value
-    check.addEventListener('change', () => updateCard(card.id, { done: check.checked }));
+    const checkbox = document.createElement('input');
+    checkbox.type    = 'checkbox';
+    checkbox.checked = card.done;
+    checkbox.disabled = WALLPAPER;
+    checkbox.addEventListener('change', () => patchCard(card.id, { done: checkbox.checked }));
 
-    const titleInput = document.createElement('input');
-    titleInput.className = 'title-input';
-    titleInput.value = card.title;
-    titleInput.placeholder = 'Task title';
-    titleInput.disabled = wallpaper;
-    titleInput.addEventListener('input', () => updateCard(card.id, { title: titleInput.value }));
+    const titleIn = buildInput('text', card.title, 'title-input', 'Task description');
+    titleIn.addEventListener('input', () => patchCard(card.id, { title: titleIn.value }));
 
-    row.append(check, titleInput);
+    row.append(checkbox, titleIn);
     body.appendChild(row);
+
   } else {
-    const titleInput = document.createElement('input');
-    titleInput.className = 'title-input';
-    titleInput.value = card.title;
-    titleInput.placeholder = card.type === 'note' ? 'Title' : 'Link title';
-    titleInput.disabled = wallpaper;
-    titleInput.addEventListener('input', () => updateCard(card.id, { title: titleInput.value }));
-    body.appendChild(titleInput);
+    const titleIn = buildInput('text', card.title, 'title-input',
+      card.type === 'note' ? 'Note title' : 'Link title'
+    );
+    titleIn.addEventListener('input', () => patchCard(card.id, { title: titleIn.value }));
+    body.appendChild(titleIn);
 
     if (card.type === 'note') {
-      const text = document.createElement('textarea');
-      text.className = 'body-input';
-      text.value = card.body;
-      text.placeholder = 'Write something…';
-      text.disabled = wallpaper;
-      text.addEventListener('input', () => updateCard(card.id, { body: text.value }));
-      body.appendChild(text);
-    } else {
-      // link card
-      const urlInput = document.createElement('input');
-      urlInput.className = 'url-input';
-      urlInput.type = 'url';
-      urlInput.value = card.url;
-      urlInput.placeholder = 'https://example.com';
-      urlInput.disabled = wallpaper;
-      urlInput.addEventListener('input', () => {
-        updateCard(card.id, { url: urlInput.value });
-        // Update the open-link anchor live without re-rendering the full card
+      const textarea = document.createElement('textarea');
+      textarea.className   = 'body-input';
+      textarea.value       = card.body;
+      textarea.placeholder = 'Start writing…';
+      textarea.disabled    = WALLPAPER;
+      textarea.addEventListener('input', () => patchCard(card.id, { body: textarea.value }));
+      body.appendChild(textarea);
+
+    } else { // link
+      const urlIn = buildInput('url', card.url, 'url-input', 'https://example.com');
+      urlIn.addEventListener('input', () => {
+        patchCard(card.id, { url: urlIn.value });
+        // Update anchor in-place without re-rendering the whole card
         const anchor = el.querySelector('.link-open');
         if (anchor) {
-          anchor.href = urlInput.value;
-          anchor.hidden = !/^https?:\/\//i.test(urlInput.value);
+          anchor.href   = urlIn.value;
+          anchor.hidden = !isValidUrl(urlIn.value);
         }
       });
-      body.appendChild(urlInput);
+      body.appendChild(urlIn);
 
-      const openAnchor = document.createElement('a');
-      openAnchor.className = 'link-open';
-      openAnchor.href = card.url;
-      openAnchor.textContent = 'Open link ↗';
-      openAnchor.hidden = !/^https?:\/\//i.test(card.url);
-      openAnchor.addEventListener('click', (e) => {
+      const anchor = document.createElement('a');
+      anchor.className   = 'link-open';
+      anchor.href        = card.url;
+      anchor.textContent = 'Open link ↗';
+      anchor.hidden      = !isValidUrl(card.url);
+      anchor.addEventListener('click', (e) => {
         e.preventDefault();
         window.dexpad.openUrl(card.url).catch(console.error);
       });
-      body.appendChild(openAnchor);
+      body.appendChild(anchor);
     }
   }
 
   el.appendChild(body);
-  attachResizeObserver(el, card);
+
+  // Observe size changes so the stored dimensions stay accurate
+  connectObserver(el, card);
   return el;
 }
 
-// ── Drag ───────────────────────────────────────────────────────────────────
-
-function startDrag(e, card, element) {
-  if (e.button !== 0 || wallpaper) return;
-  // Don't initiate a drag when clicking interactive children
-  if (e.target.closest('button,input,textarea,a')) return;
-  drag = { card, element, startX: e.clientX, startY: e.clientY, x: card.x, y: card.y };
-  window.addEventListener('mousemove', moveDrag);
-  window.addEventListener('mouseup', endDrag, { once: true });
-  // Cancel drag if the window loses focus (e.g. Alt+Tab) so we don't get stuck
-  window.addEventListener('blur', cancelDrag, { once: true });
+function buildInput(type, value, className, placeholder) {
+  const el = document.createElement('input');
+  el.type        = type;
+  el.className   = className;
+  el.value       = value;
+  el.placeholder = placeholder;
+  el.disabled    = WALLPAPER;
+  return el;
 }
 
-function moveDrag(e) {
-  if (!drag) return;
-  const dx = e.clientX - drag.startX;
-  const dy = e.clientY - drag.startY;
-  drag.card.x = Math.max(0, Math.round(drag.x + dx));
-  drag.card.y = Math.max(0, Math.round(drag.y + dy));
-  drag.element.style.left = `${drag.card.x}px`;
-  drag.element.style.top = `${drag.card.y}px`;
+function isValidUrl(str) {
+  return typeof str === 'string' && /^https?:\/\//i.test(str);
 }
 
-function endDrag() {
+// ─── Drag ─────────────────────────────────────────────────────────────────────
+
+function startDrag(e, card, el) {
+  // Only left button; ignore clicks on interactive children
+  if (e.button !== 0 || WALLPAPER) return;
+  if (e.target.closest('button,input,textarea,a,label')) return;
+
+  e.preventDefault();
+  drag = { card, el, startX: e.clientX, startY: e.clientY, origX: card.x, origY: card.y };
+
+  window.addEventListener('mousemove', onDragMove);
+  window.addEventListener('mouseup',   onDragEnd, { once: true });
+  // Cancel drag cleanly if the window loses focus mid-drag (e.g. Alt+Tab)
+  window.addEventListener('blur',      onDragCancel, { once: true });
+}
+
+function onDragMove(e) {
   if (!drag) return;
-  window.removeEventListener('mousemove', moveDrag);
-  window.removeEventListener('blur', cancelDrag);
+  drag.card.x = Math.max(0, Math.round(drag.origX + e.clientX - drag.startX));
+  drag.card.y = Math.max(0, Math.round(drag.origY + e.clientY - drag.startY));
+  drag.el.style.left = `${drag.card.x}px`;
+  drag.el.style.top  = `${drag.card.y}px`;
+}
+
+function onDragEnd() {
+  if (!drag) return;
+  window.removeEventListener('mousemove', onDragMove);
+  window.removeEventListener('blur',      onDragCancel);
   scheduleSave();
   drag = null;
 }
 
-function cancelDrag() {
+function onDragCancel() {
   if (!drag) return;
-  // Snap back to the position before the drag started
-  drag.card.x = drag.x;
-  drag.card.y = drag.y;
-  drag.element.style.left = `${drag.x}px`;
-  drag.element.style.top = `${drag.y}px`;
-  window.removeEventListener('mousemove', moveDrag);
+  // Snap back to original position
+  drag.card.x = drag.origX;
+  drag.card.y = drag.origY;
+  drag.el.style.left = `${drag.origX}px`;
+  drag.el.style.top  = `${drag.origY}px`;
+  window.removeEventListener('mousemove', onDragMove);
   drag = null;
 }
 
-// ── Render ─────────────────────────────────────────────────────────────────
+// ─── Render ───────────────────────────────────────────────────────────────────
 
 function render() {
-  // Disconnect all observers before wiping the DOM to prevent zombie callbacks
+  // Disconnect all ResizeObservers BEFORE clearing the DOM — prevents zombie callbacks
   disconnectAllObservers();
-  canvas.replaceChildren(...cards.map(createCardElement));
-  if (empty) empty.hidden = wallpaper || cards.length > 0;
-  if (controls) controls.hidden = wallpaper;
+
+  canvas.replaceChildren(...cards.map(buildCard));
+
+  if (emptyState) emptyState.hidden = WALLPAPER || cards.length > 0;
+  if (controls)   controls.hidden   = WALLPAPER;
 }
 
-// ── Event wiring ───────────────────────────────────────────────────────────
+// ─── Event wiring ─────────────────────────────────────────────────────────────
 
-if (controls) {
-  for (const button of controls.querySelectorAll('[data-add]')) {
-    button.addEventListener('click', () => {
-      cards.push(newCard(button.dataset.add));
+// Toolbar: add card buttons
+if (controls && !WALLPAPER) {
+  controls.addEventListener('click', (e) => {
+    const type = e.target.dataset.add;
+    if (type) {
+      cards.push(newCard(type));
       render();
       scheduleSave();
-    });
-  }
+    }
+    if (e.target.id === 'btn-save') flushSave();
+  });
 }
 
-const saveButton = $('save');
-if (saveButton) {
-  saveButton.addEventListener('click', save);
-}
-
-// Listen for state pushes from the main process (e.g. when another window saves)
+// State pushed from main process (e.g. another window saves, wallpaper refresh)
 window.dexpad.onStateUpdated((state) => {
   if (!state || !Array.isArray(state.cards)) return;
   cards = state.cards;
   render();
 });
 
-// Initial load
-window.dexpad.getState().then((state) => {
-  cards = Array.isArray(state.cards) ? state.cards : [];
-  render();
-}).catch((err) => {
-  console.error('[DexPad] Failed to load workspace state:', err);
-});
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+window.dexpad.getState()
+  .then((state) => {
+    cards = Array.isArray(state.cards) ? state.cards : [];
+    render();
+  })
+  .catch((err) => {
+    console.error('[DexPad] Failed to load state:', err);
+  });
