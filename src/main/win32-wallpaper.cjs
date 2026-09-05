@@ -44,12 +44,32 @@ function bufferToHwnd(buf) {
   return buf.length >= 8 ? Number(buf.readBigUInt64LE(0)) : buf.readUInt32LE(0);
 }
 
+function sendSpawnWorkerMessage(progman) {
+  // Explorer has used several variants of the undocumented desktop-worker
+  // message across Windows generations. Sending the modern Win11 form first,
+  // followed by the classic variants, is harmless when the worker already
+  // exists and makes startup resilient to shell-version differences.
+  const variants = [
+    [0xD, 0x1],
+    [0xD, 0x0],
+    [0x0, 0x0]
+  ];
+
+  for (const [wParam, lParam] of variants) {
+    const result = Buffer.alloc(8);
+    try {
+      SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_NORMAL, 1000, result);
+    } catch {
+      // Continue with the next shell-compatible variant.
+    }
+  }
+}
+
 function findWorkerW() {
   const progman = FindWindowW('Progman', null);
   if (!progman) throw new Error('Progman window not found.');
 
-  const result = Buffer.alloc(8);
-  SendMessageTimeoutW(progman, 0x052C, 0xD, 0x1, SMTO_NORMAL, 1000, result);
+  sendSpawnWorkerMessage(progman);
 
   let shellViewParent = null;
   const cb = koffi.register((hwnd) => {
@@ -67,11 +87,57 @@ function findWorkerW() {
     koffi.unregister(cb);
   }
 
-  if (!shellViewParent) throw new Error('SHELLDLL_DefView parent not found.');
+  if (!shellViewParent) {
+    // Explorer can be between shell-init states during login/resume. In that
+    // case, inspect Progman's direct children before giving up.
+    const directWorker = FindWindowExW(progman, null, 'WorkerW', null);
+    if (directWorker) return directWorker;
+    throw new Error('SHELLDLL_DefView parent not found.');
+  }
 
-  const workerW = FindWindowExW(null, shellViewParent, 'WorkerW', null);
-  if (!workerW) throw new Error('Empty WorkerW not found.');
-  return workerW;
+  // Classic Explorer layout: the wallpaper WorkerW is the next top-level
+  // WorkerW after the top-level window hosting SHELLDLL_DefView.
+  const siblingWorker = FindWindowExW(null, shellViewParent, 'WorkerW', null);
+  if (siblingWorker) return siblingWorker;
+
+  // Modern Windows 11 can host WorkerW directly below Progman instead of as a
+  // top-level sibling. Prefer an empty WorkerW (one with no DefView child).
+  let candidate = null;
+  const childCb = koffi.register((hwnd) => {
+    const defView = FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null);
+    if (!defView) {
+      candidate = hwnd;
+      return 0;
+    }
+    return 1;
+  }, koffi.pointer(EnumWindowsCallback));
+
+  try {
+    // First inspect Progman's children because this covers the current Win11
+    // shell layout without accidentally selecting unrelated WorkerW windows.
+    let childAfter = null;
+    while (true) {
+      const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
+      if (!next) break;
+      const defView = FindWindowExW(next, null, 'SHELLDLL_DefView', null);
+      if (!defView) {
+        candidate = next;
+        break;
+      }
+      childAfter = next;
+    }
+
+    if (candidate) return candidate;
+
+    // Final shell-compatible fallback: enumerate top-level WorkerW windows and
+    // select one that does not itself host the desktop icon view.
+    EnumWindows(childCb, 0);
+  } finally {
+    koffi.unregister(childCb);
+  }
+
+  if (candidate) return candidate;
+  throw new Error('No suitable WorkerW desktop host found.');
 }
 
 function prepareNativeWindow(browserWindow) {
