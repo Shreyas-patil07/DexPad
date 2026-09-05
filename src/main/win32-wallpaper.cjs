@@ -231,6 +231,16 @@ function setClickThrough(browserWindow, enabled) {
 }
 
 /**
+ * Push the window to the bottom of the z-order so desktop icons remain on top.
+ */
+function sendToBottom(browserWindow) {
+  const hwnd = electronHwnd(browserWindow);
+  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING
+  );
+}
+
+/**
  * Check if the browser window's Win32 HWND is currently parented to a valid, live desktop window.
  * Returns false if Explorer crashed or the parent WorkerW was destroyed.
  */
