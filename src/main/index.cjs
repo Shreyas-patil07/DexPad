@@ -12,8 +12,8 @@ const store = new Store({
     ideonUrl: process.env.IDEON_URL || 'http://localhost:3000',
     startup: true,
     wallpaperMode: true,
-    interactive: true,
-    interactionConfigVersion: 3,
+    interactive: false,
+    interactionConfigVersion: 4,
     authSecret: null
   }
 });
@@ -59,9 +59,9 @@ function getNodeExecutable() {
 
 function migrateInteractionConfig() {
   const version = Number(store.get('interactionConfigVersion') || 0);
-  if (version < 3) {
-    store.set('interactive', true);
-    store.set('interactionConfigVersion', 3);
+  if (version < 4) {
+    store.set('interactive', false);
+    store.set('interactionConfigVersion', 4);
   }
 }
 
