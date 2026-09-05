@@ -20,6 +20,8 @@ const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [
   'void *', 'void *', 'int32', 'int32', 'int32', 'int32', 'uint32'
 ]);
 const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
+const SetForegroundWindow = user32.func('__stdcall', 'SetForegroundWindow', 'int32', ['void *']);
+const BringWindowToTop = user32.func('__stdcall', 'BringWindowToTop', 'int32', ['void *']);
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -32,11 +34,13 @@ const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_APPWINDOW = 0x00040000;
 const WS_EX_TRANSPARENT = 0x00000020;
 const HWND_BOTTOM = 1;
+const HWND_TOP = 0;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOSIZE = 0x0001;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_NOSENDCHANGING = 0x0400;
 const SWP_SHOWWINDOW = 0x0040;
+const SW_SHOWNORMAL = 1;
 const SW_SHOWNOACTIVATE = 4;
 const SMTO_NORMAL = 0;
 
@@ -45,18 +49,13 @@ function bufferToHwnd(buf) {
 }
 
 function sendSpawnWorkerMessage(progman) {
-  const variants = [
-    [0xD, 0x1],
-    [0xD, 0x0],
-    [0x0, 0x0]
-  ];
-
+  const variants = [[0xD, 0x1], [0xD, 0x0], [0x0, 0x0]];
   for (const [wParam, lParam] of variants) {
     const result = Buffer.alloc(8);
     try {
       SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_NORMAL, 1000, result);
     } catch {
-      // Try the next Explorer-compatible variant.
+      // Continue with the next Explorer-compatible variant.
     }
   }
 }
@@ -64,24 +63,18 @@ function sendSpawnWorkerMessage(progman) {
 function findWorkerW() {
   const progman = FindWindowW('Progman', null);
   if (!progman) throw new Error('Progman window not found.');
-
   sendSpawnWorkerMessage(progman);
 
   let shellViewParent = null;
   const cb = koffi.register((hwnd) => {
-    const defView = FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null);
-    if (defView) {
+    if (FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
       shellViewParent = hwnd;
       return 0;
     }
     return 1;
   }, koffi.pointer(EnumWindowsCallback));
 
-  try {
-    EnumWindows(cb, 0);
-  } finally {
-    koffi.unregister(cb);
-  }
+  try { EnumWindows(cb, 0); } finally { koffi.unregister(cb); }
 
   if (!shellViewParent) {
     const directWorker = FindWindowExW(progman, null, 'WorkerW', null);
@@ -94,8 +87,7 @@ function findWorkerW() {
 
   let candidate = null;
   const childCb = koffi.register((hwnd) => {
-    const defView = FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null);
-    if (!defView) {
+    if (!FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
       candidate = hwnd;
       return 0;
     }
@@ -107,16 +99,13 @@ function findWorkerW() {
     while (true) {
       const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
       if (!next) break;
-      const defView = FindWindowExW(next, null, 'SHELLDLL_DefView', null);
-      if (!defView) {
+      if (!FindWindowExW(next, null, 'SHELLDLL_DefView', null)) {
         candidate = next;
         break;
       }
       childAfter = next;
     }
-
-    if (candidate) return candidate;
-    EnumWindows(childCb, 0);
+    if (!candidate) EnumWindows(childCb, 0);
   } finally {
     koffi.unregister(childCb);
   }
@@ -128,9 +117,20 @@ function findWorkerW() {
 function prepareNativeWindow(browserWindow) {
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  const nextExStyle = (exStyle | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) & ~WS_EX_APPWINDOW;
+  const nextExStyle = (exStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT;
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
   return hwnd;
+}
+
+function activateWindow(browserWindow) {
+  if (!browserWindow || browserWindow.isDestroyed()) return;
+  const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
+  const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW);
+  ShowWindow(hwnd, SW_SHOWNORMAL);
+  BringWindowToTop(hwnd);
+  SetForegroundWindow(hwnd);
+  browserWindow.focus();
 }
 
 function attachToDesktop(browserWindow, bounds, interactive = false) {
@@ -139,17 +139,7 @@ function attachToDesktop(browserWindow, bounds, interactive = false) {
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
   SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
   SetParent(hwnd, workerW);
-
-  SetWindowPos(
-    hwnd,
-    null,
-    bounds.x,
-    bounds.y,
-    bounds.width,
-    bounds.height,
-    SWP_NOACTIVATE | SWP_SHOWWINDOW
-  );
-
+  SetWindowPos(hwnd, HWND_TOP, bounds.x, bounds.y, bounds.width, bounds.height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
   setClickThrough(browserWindow, !interactive);
   ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   return true;
@@ -159,38 +149,23 @@ function detachFromDesktop(browserWindow) {
   if (!browserWindow || browserWindow.isDestroyed()) return;
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
-
   if (style & WS_CHILD) {
     SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WS_CHILD) | WS_POPUP | WS_VISIBLE);
     SetParent(hwnd, null);
   }
-
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE) | WS_EX_APPWINDOW);
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW);
 }
 
 function setClickThrough(browserWindow, enabled) {
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-
-  // NOACTIVATE is just as important as transparent mode here. The old
-  // implementation left NOACTIVATE set permanently, so the embedded page
-  // could render but could never become an interactive Electron window.
   const nextExStyle = enabled
     ? exStyle | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
-    : exStyle & ~WS_EX_TRANSPARENT & ~WS_EX_NOACTIVATE;
-
+    : (exStyle & ~WS_EX_TRANSPARENT & ~WS_EX_NOACTIVATE) | WS_EX_APPWINDOW;
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
-
-  SetWindowPos(
-    hwnd,
-    null,
-    0,
-    0,
-    0,
-    0,
-    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
-  );
+  browserWindow.setIgnoreMouseEvents(enabled);
+  SetWindowPos(hwnd, null, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
 }
 
 function sendToBottom(browserWindow) {
@@ -202,5 +177,6 @@ module.exports = {
   attachToDesktop,
   detachFromDesktop,
   setClickThrough,
-  sendToBottom
+  sendToBottom,
+  activateWindow
 };
