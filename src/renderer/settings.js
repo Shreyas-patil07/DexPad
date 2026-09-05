@@ -19,10 +19,12 @@ async function load() {
 id('btn-save').addEventListener('click', async () => {
   setStatus('Saving…');
   try {
-    await window.dexpad.setState({
-      startup:      id('chk-startup').checked,
-      wallpaperMode: id('chk-wallpaper').checked
-    });
+    const startup = id('chk-startup').checked;
+    const wallpaperMode = id('chk-wallpaper').checked;
+    await Promise.all([
+      window.dexpad.setStartup ? window.dexpad.setStartup(startup) : window.dexpad.setState({ startup }),
+      window.dexpad.setWallpaperMode ? window.dexpad.setWallpaperMode(wallpaperMode) : window.dexpad.setState({ wallpaperMode })
+    ]);
     setStatus('Saved ✓');
     setTimeout(() => setStatus('Ready'), 2000);
   } catch (err) {

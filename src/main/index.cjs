@@ -6,6 +6,12 @@ const {
 } = require('electron');
 const path = require('node:path');
 const Store = require('electron-store');
+const {
+  CURRENT_SCHEMA_VERSION,
+  isValidUrl,
+  normalizeCard,
+  migrateState
+} = require('./card-schema.cjs');
 
 // ─── Platform guard ───────────────────────────────────────────────────────────
 // win32-wallpaper.cjs calls koffi at module load and will throw on non-Windows.
@@ -26,11 +32,23 @@ if (!app.requestSingleInstanceLock()) {
   process.exit(0);
 }
 
-// ─── Persistent store ─────────────────────────────────────────────────────────
+// ─── Persistent store & Migration ─────────────────────────────────────────────
 const store = new Store({
   name: 'dexpad',
-  defaults: { startup: false, wallpaperMode: true, cards: [] }
+  defaults: {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    startup: false,
+    wallpaperMode: true,
+    cards: []
+  }
 });
+
+// Run migration if store is unversioned or from older schema
+const migrated = migrateState(store.store);
+if (store.get('schemaVersion') !== CURRENT_SCHEMA_VERSION) {
+  store.set('schemaVersion', CURRENT_SCHEMA_VERSION);
+  store.set('cards', migrated.cards);
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let workspaceWin = null;   // Normal panel window (control mode)
@@ -71,50 +89,41 @@ function wallpaperPanelBounds() {
 
 // ─── Card helpers ─────────────────────────────────────────────────────────────
 
-function normalizeCard(card, i = 0) {
-  if (!card || typeof card !== 'object') return null;
-  const type = ['note', 'todo', 'link'].includes(card.type) ? card.type : 'note';
-  return {
-    id:     typeof card.id === 'string' && card.id
-              ? card.id
-              : `card-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-    type,
-    title:  typeof card.title === 'string' ? card.title.slice(0, 200)   : '',
-    body:   typeof card.body  === 'string' ? card.body.slice(0, 10000)  : '',
-    url:    typeof card.url   === 'string' ? card.url.slice(0, 2000)    : '',
-    done:   Boolean(card.done),
-    x:      Number.isFinite(card.x)      ? Math.max(0, Math.round(card.x))                  : 20 + (i % 2) * 340,
-    y:      Number.isFinite(card.y)      ? Math.max(0, Math.round(card.y))                  : 20 + Math.floor(i / 2) * 220,
-    width:  Number.isFinite(card.width)  ? Math.max(220, Math.min(520, Math.round(card.width)))  : 300,
-    height: Number.isFinite(card.height) ? Math.max(140, Math.min(520, Math.round(card.height))) : 180
-  };
-}
-
 function getCards() {
   const raw = store.get('cards');
-  return Array.isArray(raw) ? raw.map(normalizeCard).filter(Boolean) : [];
+  return Array.isArray(raw) ? raw.map((c, i) => normalizeCard(c, i)).filter(Boolean) : [];
 }
 
 // ─── State broadcast ──────────────────────────────────────────────────────────
 
 function currentState() {
-  return { startup: store.get('startup'), wallpaperMode: store.get('wallpaperMode'), cards: getCards() };
+  return {
+    schemaVersion: store.get('schemaVersion') || CURRENT_SCHEMA_VERSION,
+    startup: Boolean(store.get('startup')),
+    wallpaperMode: typeof store.get('wallpaperMode') === 'boolean' ? store.get('wallpaperMode') : true,
+    cards: getCards()
+  };
 }
 
-function publishState() {
+function publishState(excludeSender = null) {
   if (quitting) return;
   const state = currentState();
   for (const win of [workspaceWin, desktopWin]) {
-    if (win && !win.isDestroyed()) win.webContents.send('dexpad:state-updated', state);
+    if (win && !win.isDestroyed()) {
+      if (excludeSender && win.webContents === excludeSender) continue;
+      win.webContents.send('dexpad:state-updated', state);
+    }
   }
 }
 
 // ─── Card persistence ─────────────────────────────────────────────────────────
 
-function saveCards(cards) {
-  const normalized = Array.isArray(cards) ? cards.map(normalizeCard).filter(Boolean) : [];
+function saveCards(cards, excludeSender = null) {
+  const normalized = Array.isArray(cards)
+    ? cards.map((c, i) => normalizeCard(c, i)).filter(Boolean)
+    : [];
   store.set('cards', normalized);
-  publishState();
+  publishState(excludeSender);
   return normalized;
 }
 
@@ -178,10 +187,16 @@ const ATTACH_MAX   = 6;
 const ATTACH_DELAY = 1000; // ms between retries
 let attachTries    = 0;
 let attachBusy     = false;
+let attachTimer    = null;
+let explorerWatchTimer = null;
 
 function attachWallpaper() {
   if (!desktopWin || desktopWin.isDestroyed() || !wallpaperApi) return;
   if (attachBusy) return;   // only one chain at a time
+  if (attachTimer) {
+    clearTimeout(attachTimer);
+    attachTimer = null;
+  }
   attachBusy = true;
   _doAttach();
 }
@@ -203,16 +218,18 @@ function _doAttach() {
     wallpaperApi.sendToBottom(desktopWin);
     attachTries = 0;
     attachBusy  = false;
+    attachTimer = null;
     console.log('[DexPad] Wallpaper panel attached to desktop.');
   } catch (err) {
     if (attachTries < ATTACH_MAX) {
       attachTries++;
       console.warn(`[DexPad] Wallpaper attach attempt ${attachTries}/${ATTACH_MAX} failed, retrying…`);
-      setTimeout(_doAttach, ATTACH_DELAY);
+      attachTimer = setTimeout(_doAttach, ATTACH_DELAY);
     } else {
       console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.', err.message);
       attachTries = 0;
       attachBusy  = false;
+      attachTimer = null;
       // Graceful fallback: disable wallpaper mode, open normal panel
       store.set('wallpaperMode', false);
       destroyDesktopWindow();
@@ -261,7 +278,7 @@ function createDesktopWindow() {
   // Use a single trigger point — did-finish-load is the most reliable
   desktopWin.webContents.once('did-finish-load', () => {
     // Small delay lets the renderer finish painting before we attach
-    setTimeout(attachWallpaper, 150);
+    attachTimer = setTimeout(attachWallpaper, 150);
   });
 
   desktopWin.on('closed', () => { desktopWin = null; });
@@ -269,9 +286,13 @@ function createDesktopWindow() {
 }
 
 function destroyDesktopWindow() {
-  if (!desktopWin || desktopWin.isDestroyed()) return;
+  if (attachTimer) {
+    clearTimeout(attachTimer);
+    attachTimer = null;
+  }
   attachBusy  = false;
   attachTries = 0;
+  if (!desktopWin || desktopWin.isDestroyed()) return;
   if (wallpaperApi) {
     try { wallpaperApi.detachFromDesktop(desktopWin); } catch (_) { /* best effort */ }
   }
@@ -288,6 +309,20 @@ function refreshWallpaper() {
   publishState();
   attachWallpaper();
   return true;
+}
+
+// ─── Explorer crash & restart watchdog ────────────────────────────────────────
+function startExplorerWatch() {
+  if (explorerWatchTimer) clearInterval(explorerWatchTimer);
+  explorerWatchTimer = setInterval(() => {
+    if (quitting || !store.get('wallpaperMode')) return;
+    if (desktopWin && !desktopWin.isDestroyed() && wallpaperApi) {
+      if (!wallpaperApi.isWindowAttached(desktopWin)) {
+        console.warn('[DexPad] Desktop attachment lost (Explorer restarted). Re-attaching…');
+        attachWallpaper();
+      }
+    }
+  }, 4000);
 }
 
 // ─── Mode switching ───────────────────────────────────────────────────────────
@@ -309,12 +344,19 @@ function setWallpaperMode(enabled) {
 // ─── Tray ─────────────────────────────────────────────────────────────────────
 
 function buildTrayIcon() {
-  // Try to load an icon file; fall back to empty (Windows will show a blank icon)
-  const iconPath = path.join(RENDERER, 'icon.ico');
-  try {
-    const img = nativeImage.createFromPath(iconPath);
-    if (!img.isEmpty()) return img;
-  } catch (_) { /* no icon file */ }
+  const candidatePaths = [
+    path.join(__dirname, '../../assets/icon.png'),
+    path.join(__dirname, '../assets/icon.png'),
+    path.join(__dirname, '../../assets/icon.ico'),
+    path.join(RENDERER, 'icon.png'),
+    path.join(RENDERER, 'icon.ico')
+  ];
+  for (const p of candidatePaths) {
+    try {
+      const img = nativeImage.createFromPath(p);
+      if (!img.isEmpty()) return img;
+    } catch (_) {}
+  }
   return nativeImage.createEmpty();
 }
 
@@ -370,6 +412,14 @@ function showSettingsWindow() {
 
 function quitApp() {
   quitting = true;
+  if (explorerWatchTimer) {
+    clearInterval(explorerWatchTimer);
+    explorerWatchTimer = null;
+  }
+  if (attachTimer) {
+    clearTimeout(attachTimer);
+    attachTimer = null;
+  }
   globalShortcut.unregisterAll();
   destroyDesktopWindow();
   workspaceWin?.destroy();
@@ -380,21 +430,41 @@ function quitApp() {
 
 // ─── IPC handlers ────────────────────────────────────────────────────────────
 
-ipcMain.handle('dexpad:get-state',  ()            => currentState());
-ipcMain.handle('dexpad:save-cards', (_, cards)    => saveCards(cards));
-ipcMain.handle('dexpad:refresh-wallpaper', ()     => refreshWallpaper());
-ipcMain.handle('dexpad:open-workspace',    ()     => { showControlWindow(); return true; });
+ipcMain.handle('dexpad:get-state', () => currentState());
 
-ipcMain.handle('dexpad:open-url', (_, url) => {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url))
-    throw new Error('Only http(s) URLs are permitted.');
-  return shell.openExternal(url);
+ipcMain.handle('dexpad:save-cards', (event, rawCards) => {
+  return saveCards(rawCards, event.sender);
+});
+
+ipcMain.handle('dexpad:set-startup', (_, enabled) => {
+  if (typeof enabled === 'boolean') {
+    applyStartup(enabled);
+    publishState();
+  }
+  return currentState();
+});
+
+ipcMain.handle('dexpad:set-wallpaper-mode', (_, enabled) => {
+  if (typeof enabled === 'boolean') {
+    setWallpaperMode(enabled);
+  }
+  return currentState();
 });
 
 ipcMain.handle('dexpad:set-state', (_, state) => {
-  if (typeof state?.startup      === 'boolean') applyStartup(state.startup);
+  if (typeof state?.startup === 'boolean') applyStartup(state.startup);
   if (typeof state?.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
   return currentState();
+});
+
+ipcMain.handle('dexpad:refresh-wallpaper', () => refreshWallpaper());
+ipcMain.handle('dexpad:open-workspace', () => { showControlWindow(); return true; });
+
+ipcMain.handle('dexpad:open-url', (_, url) => {
+  if (!isValidUrl(url)) {
+    throw new Error('Only http(s) URLs are permitted.');
+  }
+  return shell.openExternal(url);
 });
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
@@ -403,9 +473,13 @@ app.whenReady().then(() => {
   applyStartup(store.get('startup'));
 
   // Global hotkey: Ctrl+Alt+D opens the control panel from anywhere
-  globalShortcut.register('CommandOrControl+Alt+D', () => showControlWindow());
+  const registered = globalShortcut.register('CommandOrControl+Alt+D', () => showControlWindow());
+  if (!registered) {
+    console.warn('[DexPad] Warning: Global shortcut CommandOrControl+Alt+D could not be registered.');
+  }
 
   createTray();
+  startExplorerWatch();
 
   // Respect --hidden flag (used when launched at Windows startup)
   const hidden = process.argv.includes('--hidden');

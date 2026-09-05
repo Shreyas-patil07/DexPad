@@ -2,6 +2,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('dexpad', {
   getState: () => ipcRenderer.invoke('dexpad:get-state'),
+  setStartup: (enabled) => ipcRenderer.invoke('dexpad:set-startup', enabled),
+  setWallpaperMode: (enabled) => ipcRenderer.invoke('dexpad:set-wallpaper-mode', enabled),
   setState: (state) => ipcRenderer.invoke('dexpad:set-state', state),
   saveCards: (cards) => ipcRenderer.invoke('dexpad:save-cards', cards),
   openWorkspace: () => ipcRenderer.invoke('dexpad:open-workspace'),
