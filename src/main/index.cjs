@@ -30,17 +30,18 @@ function getPanelBounds() {
   const height = Math.min(760, Math.round(workArea.height * 0.82));
 
   return {
-    // Flush against the right edge, with no right-side gap.
     x: workArea.x + workArea.width - width,
-    // Vertically centered in the usable desktop area.
     y: workArea.y + Math.round((workArea.height - height) / 2),
     width,
     height
   };
 }
 
+// The desktop layer intentionally uses the same right-side geometry as the
+// interactive panel. This keeps the visible DexPad surface flush to the
+// right edge while remaining vertically centered.
 function getWallpaperBounds() {
-  return screen.getPrimaryDisplay().bounds;
+  return getPanelBounds();
 }
 
 function normalizeCard(card, index = 0) {
@@ -106,7 +107,7 @@ function createWorkspaceWindow() {
     show: false,
     frame: true,
     resizable: true,
-    movable: true,
+    movable: false,
     focusable: true,
     skipTaskbar: false,
     backgroundColor: '#0b0d10',
@@ -159,13 +160,13 @@ function createDesktopWindow() {
     height: bounds.height,
     show: false,
     frame: false,
-    transparent: true,
+    transparent: false,
     resizable: false,
     movable: false,
     focusable: false,
     skipTaskbar: true,
     hasShadow: false,
-    backgroundColor: '#00000000',
+    backgroundColor: '#0b0d10',
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
