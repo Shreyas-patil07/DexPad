@@ -50,23 +50,27 @@ execFileSync('corepack', [
 const migrationsFile = path.join(ideonDir, 'src', 'app', 'lib', 'migrations.ts');
 if (fs.existsSync(migrationsFile)) {
   let migrationsSource = fs.readFileSync(migrationsFile, 'utf8');
+
   if (!migrationsSource.includes('pathToFileURL')) {
+    const importNeedle = /import\s+\*\s+as\s+path\s+from\s+['"]node:path['"];\r?\n/;
+    if (!importNeedle.test(migrationsSource)) {
+      throw new Error('[DexPad] Could not patch Ideon migrations.ts: node:path import not found.');
+    }
     migrationsSource = migrationsSource.replace(
-      'import * as path from "node:path";\n',
-      'import * as path from "node:path";\nimport { pathToFileURL } from "node:url";\n'
+      importNeedle,
+      (match) => `${match}import { pathToFileURL } from 'node:url';\n`
     );
   }
 
-  const providerNeedle = '      migrationFolder: path.join(process.cwd(), "src/app/db/migrations"),\n';
-  const providerReplacement =
-    '      migrationFolder: path.join(process.cwd(), "src/app/db/migrations"),\n' +
-    '      import: (modulePath) => import(pathToFileURL(modulePath).href),\n';
-
   if (!migrationsSource.includes('import: (modulePath) => import(pathToFileURL(modulePath).href)')) {
-    if (!migrationsSource.includes(providerNeedle)) {
+    const migrationFolderLine = /^\s*migrationFolder\s*:\s*.+?,\s*$/m;
+    if (!migrationFolderLine.test(migrationsSource)) {
       throw new Error('[DexPad] Could not patch Ideon migrations.ts: migrationFolder line not found.');
     }
-    migrationsSource = migrationsSource.replace(providerNeedle, providerReplacement);
+    migrationsSource = migrationsSource.replace(
+      migrationFolderLine,
+      (match) => `${match}\n      import: (modulePath) => import(pathToFileURL(modulePath).href),`
+    );
   }
 
   fs.writeFileSync(migrationsFile, migrationsSource, 'utf8');
