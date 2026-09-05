@@ -22,8 +22,8 @@ id('btn-save').addEventListener('click', async () => {
     const startup = id('chk-startup').checked;
     const wallpaperMode = id('chk-wallpaper').checked;
     await Promise.all([
-      window.dexpad.setStartup ? window.dexpad.setStartup(startup) : window.dexpad.setState({ startup }),
-      window.dexpad.setWallpaperMode ? window.dexpad.setWallpaperMode(wallpaperMode) : window.dexpad.setState({ wallpaperMode })
+      window.dexpad.setStartup(startup),
+      window.dexpad.setWallpaperMode(wallpaperMode)
     ]);
     setStatus('Saved ✓');
     setTimeout(() => setStatus('Ready'), 2000);
