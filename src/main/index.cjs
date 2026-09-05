@@ -42,25 +42,17 @@ function getAuthSecret() {
 }
 
 function getNodeExecutable() {
-  if (process.env.NODE_EXECUTABLE && fs.existsSync(process.env.NODE_EXECUTABLE)) {
-    return process.env.NODE_EXECUTABLE;
-  }
-
-  if (process.env.NODE && fs.existsSync(process.env.NODE)) {
-    return process.env.NODE;
-  }
-
+  if (process.env.NODE_EXECUTABLE && fs.existsSync(process.env.NODE_EXECUTABLE)) return process.env.NODE_EXECUTABLE;
+  if (process.env.NODE && fs.existsSync(process.env.NODE)) return process.env.NODE;
   if (process.platform === 'win32') {
     const candidates = [
       path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
       process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'nodejs', 'node.exe') : null,
       process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null
     ].filter(Boolean);
-
     const systemNode = candidates.find((candidate) => fs.existsSync(candidate));
     if (systemNode) return systemNode;
   }
-
   return 'node';
 }
 
@@ -127,9 +119,24 @@ function getDesktopBounds() {
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+function getFloatingPanelBounds() {
+  const display = screen.getPrimaryDisplay();
+  const workArea = display.workArea;
+  const width = Math.min(960, Math.round(workArea.width * 0.52));
+  const height = Math.min(820, Math.round(workArea.height * 0.84));
+  const margin = Math.max(24, Math.round(workArea.width * 0.02));
+
+  return {
+    x: workArea.x + workArea.width - width - margin,
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    width,
+    height
+  };
+}
+
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
-  const bounds = getDesktopBounds();
+  const bounds = getFloatingPanelBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
     sendToBottom(desktopWindow);
@@ -209,17 +216,11 @@ function startIdeonServer() {
     windowsHide: true
   });
 
-  ideonServer.on('spawn', () => {
-    console.log('[DexPad] Ideon server process started.');
-  });
-
+  ideonServer.on('spawn', () => console.log('[DexPad] Ideon server process started.'));
   ideonServer.on('exit', (code, signal) => {
     ideonServer = null;
-    if (!shuttingDown && (code || signal)) {
-      console.error(`[DexPad] Ideon server exited with code ${code} signal ${signal || 'none'}`);
-    }
+    if (!shuttingDown && (code || signal)) console.error(`[DexPad] Ideon server exited with code ${code} signal ${signal || 'none'}`);
   });
-
   ideonServer.on('error', (error) => {
     ideonServer = null;
     if (!shuttingDown) console.error('[DexPad] Failed to start Ideon server:', error);
@@ -245,7 +246,10 @@ ipcMain.handle('dexpad:set-state', (_event, state) => {
   if (typeof state?.startup === 'boolean') setStartup(state.startup);
   if (typeof state?.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
   if (typeof state?.interactive === 'boolean') setInteractiveMode(state.interactive);
-  return { ideonUrl: store.get('ideonUrl'), startup: store.get('startup'), wallpaperMode: store.get('wallpaperMode'), interactive: store.get('interactive') };
+  return {
+    ideonUrl: store.get('ideonUrl'), startup: store.get('startup'),
+    wallpaperMode: store.get('wallpaperMode'), interactive: store.get('interactive')
+  };
 });
 
 ipcMain.handle('dexpad:open-workspace', () => { createWorkspaceWindow(); return true; });
