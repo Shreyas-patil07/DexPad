@@ -31,8 +31,7 @@ execFileSync('corepack', [
   'pnpm', 'add',
   '@tiptap/core@3.31.3',
   '@tiptap/pm@3.31.3',
-  // level@8.0.1 requires classic-level ^1.2.0. Do not use the nonexistent
-  // 2.0.1 release; 1.4.1 is the newest 1.x release.
+  // level@8.0.1 requires classic-level ^1.2.0. 1.4.1 is the newest 1.x release.
   'classic-level@^1.4.1',
   'katex@^0.16.22',
   'lodash@^4.18.1',
@@ -44,13 +43,11 @@ execFileSync('corepack', [
   shell: process.platform === 'win32'
 });
 
-// The latest pnpm + Next/Tsup combination can leave some transitive runtime
-// packages externalized in dist/server.cjs. Verify the critical runtime module
-// is resolvable before building, so the bootstrap fails at the actual cause.
-execFileSync('corepack', ['pnpm', 'exec', 'node', '-e', "require.resolve('classic-level'); console.log('classic-level: OK')"], {
+// Verify from a Node process directly. Using `shell: true` here breaks the
+// JavaScript `-e` expression on Windows because cmd.exe splits the semicolon.
+execFileSync(process.execPath, ['-e', "require.resolve('classic-level'); console.log('classic-level: OK')"], {
   cwd: ideonDir,
-  stdio: 'inherit',
-  shell: process.platform === 'win32'
+  stdio: 'inherit'
 });
 
 execFileSync('corepack', ['pnpm', 'build'], {
