@@ -124,14 +124,48 @@ function getDesktopBounds() {
   };
 }
 
+function applyWindowInputMode() {
+  if (!desktopWindow || desktopWindow.isDestroyed()) return;
+  const interactive = store.get('interactive');
+
+  // Interactive mode is a normal top-level window. Do not leave it parented to
+  // Explorer's WorkerW because Explorer can consume pointer activation first.
+  if (interactive) {
+    try {
+      detachFromDesktop(desktopWindow);
+    } catch (error) {
+      console.warn('[DexPad] Failed to detach interactive window:', error);
+    }
+    desktopWindow.setAlwaysOnTop(true, 'floating');
+    desktopWindow.setIgnoreMouseEvents(false);
+    setClickThrough(desktopWindow, false);
+    desktopWindow.show();
+    desktopWindow.focus();
+    return;
+  }
+
+  desktopWindow.setAlwaysOnTop(false);
+  setClickThrough(desktopWindow, true);
+  desktopWindow.setIgnoreMouseEvents(true);
+  try {
+    attachToDesktop(desktopWindow, getDesktopBounds());
+  } catch (error) {
+    console.error('[DexPad] WorkerW attachment failed:', error);
+    return;
+  }
+  desktopWindow.showInactive();
+  sendToBottom(desktopWindow);
+}
+
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
   const bounds = getDesktopBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
-    setClickThrough(desktopWindow, !store.get('interactive'));
+    applyWindowInputMode();
     return desktopWindow;
   }
+
   desktopWindow = new BrowserWindow({
     x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
     frame: false, resizable: false, movable: false, focusable: true,
@@ -142,10 +176,9 @@ function createDesktopWindow() {
   desktopWindow.loadURL(store.get('ideonUrl'));
   desktopWindow.once('ready-to-show', () => {
     try {
-      attachToDesktop(desktopWindow, bounds, store.get('interactive'));
-      desktopWindow.showInactive();
+      applyWindowInputMode();
     } catch (error) {
-      console.error('[DexPad] WorkerW attachment failed:', error);
+      console.error('[DexPad] Failed to configure desktop window:', error);
     }
   });
   desktopWindow.on('closed', () => { desktopWindow = null; });
@@ -161,15 +194,16 @@ function destroyDesktopWindow() {
 
 function setWallpaperMode(enabled) {
   store.set('wallpaperMode', enabled);
-  if (enabled) createDesktopWindow(); else destroyDesktopWindow();
+  if (enabled) createDesktopWindow();
+  else destroyDesktopWindow();
   rebuildTrayMenu();
 }
 
 function setInteractiveMode(enabled) {
   store.set('interactive', enabled);
   if (desktopWindow && !desktopWindow.isDestroyed()) {
-    setClickThrough(desktopWindow, !enabled);
-    if (enabled) desktopWindow.focus();
+    desktopWindow.setBounds(getDesktopBounds());
+    applyWindowInputMode();
   }
   rebuildTrayMenu();
 }
