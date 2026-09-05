@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DexPad Settings</title>
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <main class="panel">
+    <div class="header">
+      <div>
+        <div class="eyebrow">DESKTOP WORKSPACE</div>
+        <h1>DexPad</h1>
+        <p>Ideon-powered desktop canvas.</p>
+      </div>
+      <button id="open" class="secondary">Open</button>
+    </div>
+
+    <section>
+      <label for="url">Ideon URL</label>
+      <input id="url" type="url" placeholder="http://localhost:3000" />
+      <small>For development this should point to your local Ideon server. The packaged build can later bundle Ideon directly.</small>
+    </section>
+
+    <section class="toggles">
+      <label class="row"><span><strong>Start with Windows</strong><small>Launch DexPad when you sign in.</small></span><input id="startup" type="checkbox" /></label>
+      <label class="row"><span><strong>Desktop Wallpaper</strong><small>Attach the canvas behind Windows desktop icons.</small></span><input id="wallpaper" type="checkbox" /></label>
+      <label class="row"><span><strong>Interactive Mode</strong><small>Ctrl + Alt + D toggles mouse interaction.</small></span><input id="interactive" type="checkbox" /></label>
+    </section>
+
+    <div class="actions">
+      <span id="status">Loading…</span>
+      <button id="save">Save</button>
+    </div>
+  </main>
+  <script src="settings.js"></script>
+</body>
+</html>
