@@ -82,14 +82,28 @@ if (!migrationFolderLine.test(migrationsSource)) {
 
 migrationsSource = migrationsSource.replace(migrationFolderLine, migrationFolderReplacement);
 
-// Kysely's FileMigrationProvider passes Windows filesystem paths to its custom
-// importer. Convert those paths to file:// URLs before dynamic import().
+// FileMigrationProvider gives the custom loader absolute filesystem paths.
+// Do not use dynamic import() here: Next/Webpack rewrites it and then tries to
+// resolve the runtime-generated .cjs migration files from its own bundle.
+// createRequire gives us a real Node CommonJS loader at runtime, while keeping
+// the call indirect so Webpack does not turn it into a context module.
+const runtimeRequireMarker = 'const __dexpadRuntimeRequire = require("node:module").createRequire(require("node:path").join(process.cwd(), "package.json"));';
+const runtimeRequireLine = /^const __dexpadRuntimeRequire = .*;\s*$/m;
+if (!runtimeRequireLine.test(migrationsSource)) {
+  const importLine = /^import\s+/m.exec(migrationsSource);
+  if (importLine) {
+    migrationsSource = migrationsSource.slice(0, importLine.index) + `${runtimeRequireMarker}\n` + migrationsSource.slice(importLine.index);
+  } else {
+    migrationsSource = `${runtimeRequireMarker}\n${migrationsSource}`;
+  }
+}
+
 const providerImportLine = /\s*import:\s*\([^\n]+=>\s*[^\n]+,?\r?\n?/;
-const desiredImportLine = '      import: (modulePath) => import(require("node:url").pathToFileURL(modulePath).href),';
+const desiredImportLine = '      import: (modulePath) => Promise.resolve(__dexpadRuntimeRequire(modulePath)),';
 
 if (providerImportLine.test(migrationsSource)) {
   migrationsSource = migrationsSource.replace(providerImportLine, `\n${desiredImportLine}\n`);
-} else {
+} else if (!migrationsSource.includes(desiredImportLine)) {
   migrationsSource = migrationsSource.replace(
     migrationFolderReplacement,
     `${migrationFolderReplacement}\n${desiredImportLine}`
