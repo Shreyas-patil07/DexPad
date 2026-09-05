@@ -9,6 +9,7 @@ const modeLabel = $('mode-label');
 let cards = [];
 let saveTimer = null;
 let drag = null;
+let resizeObserver = null;
 
 if (wallpaper) {
   document.body.classList.add('wallpaper');
@@ -57,6 +58,22 @@ function updateCard(id, patch) {
   if (!card) return;
   Object.assign(card, patch);
   scheduleSave();
+}
+
+function observeResize(element, card) {
+  if (wallpaper || typeof ResizeObserver !== 'function') return;
+  const observer = new ResizeObserver((entries) => {
+    const rect = entries[0]?.contentRect;
+    if (!rect) return;
+    const width = Math.max(220, Math.min(520, Math.round(rect.width)));
+    const height = Math.max(140, Math.min(520, Math.round(rect.height)));
+    if (card.width !== width || card.height !== height) {
+      card.width = width;
+      card.height = height;
+      scheduleSave();
+    }
+  });
+  observer.observe(element);
 }
 
 function createCardElement(card) {
@@ -147,6 +164,7 @@ function createCardElement(card) {
   }
 
   el.appendChild(body);
+  observeResize(el, card);
   return el;
 }
 
@@ -177,8 +195,8 @@ function endDrag() {
 
 function render() {
   canvas.replaceChildren();
-  empty.hidden = cards.length > 0;
-  if (wallpaper) controls.hidden = true;
+  empty.hidden = wallpaper || cards.length > 0;
+  controls.hidden = wallpaper;
   for (const card of cards) canvas.appendChild(createCardElement(card));
 }
 
