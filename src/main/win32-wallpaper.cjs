@@ -21,6 +21,9 @@ const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [
 ]);
 const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', ['void *', 'void *']);
 const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
+const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAttributes', 'int32', [
+  'void *', 'uint32', 'uint8', 'uint32'
+]);
 const SetForegroundWindow = user32.func('__stdcall', 'SetForegroundWindow', 'int32', ['void *']);
 const BringWindowToTop = user32.func('__stdcall', 'BringWindowToTop', 'int32', ['void *']);
 
@@ -34,6 +37,8 @@ const WS_EX_TOOLWINDOW = 0x00000080;
 const WS_EX_NOACTIVATE = 0x08000000;
 const WS_EX_APPWINDOW = 0x00040000;
 const WS_EX_TRANSPARENT = 0x00000020;
+const WS_EX_LAYERED = 0x00080000;
+const LWA_ALPHA = 0x00000002;
 const HWND_BOTTOM = 1;
 const HWND_TOP = 0;
 const SWP_NOMOVE = 0x0002;
@@ -50,6 +55,8 @@ function bufferToHwnd(buf) {
 }
 
 function sendSpawnWorkerMessage(progman) {
+  // Win11's raised-desktop shell responds to 0x0D/0x01 by creating the
+  // wallpaper WorkerW child under Progman. Keep the older variants as fallbacks.
   const variants = [[0xD, 0x1], [0xD, 0x0], [0x0, 0x0]];
   for (const [wParam, lParam] of variants) {
     const result = Buffer.alloc(8);
@@ -66,6 +73,23 @@ function findWorkerW() {
   if (!progman) throw new Error('Progman window not found.');
   sendSpawnWorkerMessage(progman);
 
+  // Windows 11 raised-desktop: the wallpaper WorkerW is a direct child of
+  // Progman and is z-ordered underneath SHELLDLL_DefView.
+  let directWorker = null;
+  let childAfter = null;
+  while (true) {
+    const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
+    if (!next) break;
+    if (!FindWindowExW(next, null, 'SHELLDLL_DefView', null)) {
+      directWorker = next;
+      break;
+    }
+    childAfter = next;
+  }
+  if (directWorker) return directWorker;
+
+  // Classic shell layout: locate the top-level window hosting SHELLDLL_DefView
+  // and use the following WorkerW sibling.
   let shellViewParent = null;
   const cb = koffi.register((hwnd) => {
     if (FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
@@ -75,21 +99,21 @@ function findWorkerW() {
     return 1;
   }, koffi.pointer(EnumWindowsCallback));
 
-  try { EnumWindows(cb, 0); } finally { koffi.unregister(cb); }
+  try {
+    EnumWindows(cb, 0);
+  } finally {
+    koffi.unregister(cb);
+  }
 
   if (!shellViewParent) {
-    const directWorker = FindWindowExW(progman, null, 'WorkerW', null);
-    if (directWorker) return directWorker;
     throw new Error('SHELLDLL_DefView parent not found.');
   }
 
-  // This is the canonical WorkerW injection path: the WorkerW immediately
-  // following the window hosting SHELLDLL_DefView is the empty wallpaper host.
   const siblingWorker = FindWindowExW(null, shellViewParent, 'WorkerW', null);
   if (siblingWorker) return siblingWorker;
 
   let candidate = null;
-  const childCb = koffi.register((hwnd) => {
+  const fallbackCb = koffi.register((hwnd) => {
     if (!FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null)) {
       candidate = hwnd;
       return 0;
@@ -98,19 +122,9 @@ function findWorkerW() {
   }, koffi.pointer(EnumWindowsCallback));
 
   try {
-    let childAfter = null;
-    while (true) {
-      const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
-      if (!next) break;
-      if (!FindWindowExW(next, null, 'SHELLDLL_DefView', null)) {
-        candidate = next;
-        break;
-      }
-      childAfter = next;
-    }
-    if (!candidate) EnumWindows(childCb, 0);
+    EnumWindows(fallbackCb, 0);
   } finally {
-    koffi.unregister(childCb);
+    koffi.unregister(fallbackCb);
   }
 
   if (candidate) return candidate;
@@ -120,8 +134,13 @@ function findWorkerW() {
 function prepareNativeWindow(browserWindow) {
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  const nextExStyle = (exStyle | WS_EX_TOOLWINDOW) & ~WS_EX_APPWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT;
+  const nextExStyle =
+    (exStyle | WS_EX_TOOLWINDOW | WS_EX_LAYERED) &
+    ~WS_EX_APPWINDOW &
+    ~WS_EX_NOACTIVATE &
+    ~WS_EX_TRANSPARENT;
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
+  SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
   return hwnd;
 }
 
@@ -129,7 +148,11 @@ function activateWindow(browserWindow) {
   if (!browserWindow || browserWindow.isDestroyed()) return;
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW);
+  SetWindowLongPtrW(
+    hwnd,
+    GWL_EXSTYLE,
+    (exStyle & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW
+  );
   ShowWindow(hwnd, SW_SHOWNORMAL);
   BringWindowToTop(hwnd);
   SetForegroundWindow(hwnd);
@@ -140,15 +163,17 @@ function attachToDesktop(browserWindow, bounds) {
   const hwnd = prepareNativeWindow(browserWindow);
   const workerW = findWorkerW();
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
-  SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
+  SetWindowLongPtrW(
+    hwnd,
+    GWL_STYLE,
+    (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS
+  );
 
   if (!SetParent(hwnd, workerW)) {
     throw new Error('SetParent failed while attaching DexPad to WorkerW.');
   }
 
-  // Child-window coordinates are relative to the Worker's client origin.
-  // Query the Worker's actual screen rectangle and convert DexPad's desired
-  // screen-space panel bounds into the correct child coordinates.
+  // WorkerW child coordinates are relative to the Worker's client origin.
   const parentRect = Buffer.alloc(16);
   if (!GetWindowRect(workerW, parentRect)) {
     throw new Error('Failed to query WorkerW screen rectangle.');
@@ -169,6 +194,7 @@ function attachToDesktop(browserWindow, bounds) {
     SWP_NOACTIVATE | SWP_SHOWWINDOW
   );
 
+  SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
   ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   return true;
 }
@@ -182,7 +208,11 @@ function detachFromDesktop(browserWindow) {
     SetParent(hwnd, null);
   }
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (exStyle & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW);
+  SetWindowLongPtrW(
+    hwnd,
+    GWL_EXSTYLE,
+    (exStyle & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW
+  );
 }
 
 function setClickThrough(browserWindow, enabled) {
@@ -198,7 +228,15 @@ function setClickThrough(browserWindow, enabled) {
 
 function sendToBottom(browserWindow) {
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
-  SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  SetWindowPos(
+    hwnd,
+    HWND_BOTTOM,
+    0,
+    0,
+    0,
+    0,
+    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING
+  );
 }
 
 module.exports = {
