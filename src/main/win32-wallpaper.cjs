@@ -45,10 +45,6 @@ function bufferToHwnd(buf) {
 }
 
 function sendSpawnWorkerMessage(progman) {
-  // Explorer has used several variants of the undocumented desktop-worker
-  // message across Windows generations. Sending the modern Win11 form first,
-  // followed by the classic variants, is harmless when the worker already
-  // exists and makes startup resilient to shell-version differences.
   const variants = [
     [0xD, 0x1],
     [0xD, 0x0],
@@ -60,7 +56,7 @@ function sendSpawnWorkerMessage(progman) {
     try {
       SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_NORMAL, 1000, result);
     } catch {
-      // Continue with the next shell-compatible variant.
+      // Try the next Explorer-compatible variant.
     }
   }
 }
@@ -88,20 +84,14 @@ function findWorkerW() {
   }
 
   if (!shellViewParent) {
-    // Explorer can be between shell-init states during login/resume. In that
-    // case, inspect Progman's direct children before giving up.
     const directWorker = FindWindowExW(progman, null, 'WorkerW', null);
     if (directWorker) return directWorker;
     throw new Error('SHELLDLL_DefView parent not found.');
   }
 
-  // Classic Explorer layout: the wallpaper WorkerW is the next top-level
-  // WorkerW after the top-level window hosting SHELLDLL_DefView.
   const siblingWorker = FindWindowExW(null, shellViewParent, 'WorkerW', null);
   if (siblingWorker) return siblingWorker;
 
-  // Modern Windows 11 can host WorkerW directly below Progman instead of as a
-  // top-level sibling. Prefer an empty WorkerW (one with no DefView child).
   let candidate = null;
   const childCb = koffi.register((hwnd) => {
     const defView = FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null);
@@ -113,8 +103,6 @@ function findWorkerW() {
   }, koffi.pointer(EnumWindowsCallback));
 
   try {
-    // First inspect Progman's children because this covers the current Win11
-    // shell layout without accidentally selecting unrelated WorkerW windows.
     let childAfter = null;
     while (true) {
       const next = FindWindowExW(progman, childAfter, 'WorkerW', null);
@@ -128,9 +116,6 @@ function findWorkerW() {
     }
 
     if (candidate) return candidate;
-
-    // Final shell-compatible fallback: enumerate top-level WorkerW windows and
-    // select one that does not itself host the desktop icon view.
     EnumWindows(childCb, 0);
   } finally {
     koffi.unregister(childCb);
@@ -148,7 +133,7 @@ function prepareNativeWindow(browserWindow) {
   return hwnd;
 }
 
-function attachToDesktop(browserWindow, bounds) {
+function attachToDesktop(browserWindow, bounds, interactive = false) {
   const hwnd = prepareNativeWindow(browserWindow);
   const workerW = findWorkerW();
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
@@ -165,6 +150,7 @@ function attachToDesktop(browserWindow, bounds) {
     SWP_NOACTIVATE | SWP_SHOWWINDOW
   );
 
+  setClickThrough(browserWindow, !interactive);
   ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   return true;
 }
@@ -186,8 +172,25 @@ function detachFromDesktop(browserWindow) {
 function setClickThrough(browserWindow, enabled) {
   const hwnd = bufferToHwnd(browserWindow.getNativeWindowHandle());
   const exStyle = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  const nextExStyle = enabled ? exStyle | WS_EX_TRANSPARENT : exStyle & ~WS_EX_TRANSPARENT;
+
+  // NOACTIVATE is just as important as transparent mode here. The old
+  // implementation left NOACTIVATE set permanently, so the embedded page
+  // could render but could never become an interactive Electron window.
+  const nextExStyle = enabled
+    ? exStyle | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
+    : exStyle & ~WS_EX_TRANSPARENT & ~WS_EX_NOACTIVATE;
+
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
+
+  SetWindowPos(
+    hwnd,
+    null,
+    0,
+    0,
+    0,
+    0,
+    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW
+  );
 }
 
 function sendToBottom(browserWindow) {
