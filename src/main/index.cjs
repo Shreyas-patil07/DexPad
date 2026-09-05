@@ -1,13 +1,20 @@
-const { app, BrowserWindow, globalShortcut, ipcMain, screen, shell, Menu, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, globalShortcut, ipcMain, screen, Menu, Tray, nativeImage } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const Store = require('electron-store');
 const { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom } = require('./win32-wallpaper.cjs');
 
 const store = new Store({
   name: 'dexpad',
-  defaults: { ideonUrl: process.env.IDEON_URL || 'http://localhost:3000', startup: true, wallpaperMode: true, interactive: false }
+  defaults: {
+    ideonUrl: process.env.IDEON_URL || 'http://localhost:3000',
+    startup: true,
+    wallpaperMode: true,
+    interactive: false,
+    authSecret: null
+  }
 });
 
 let workspaceWindow = null;
@@ -26,6 +33,14 @@ function getIdeonRoot() {
   return candidates.find((dir) => fs.existsSync(path.join(dir, 'dist', 'server.cjs')));
 }
 
+function getAuthSecret() {
+  const existing = store.get('authSecret');
+  if (typeof existing === 'string' && existing.length >= 32) return existing;
+  const secret = crypto.randomBytes(32).toString('base64url');
+  store.set('authSecret', secret);
+  return secret;
+}
+
 function createWorkspaceWindow() {
   if (workspaceWindow && !workspaceWindow.isDestroyed()) {
     workspaceWindow.show();
@@ -34,7 +49,7 @@ function createWorkspaceWindow() {
   }
   workspaceWindow = new BrowserWindow({
     width: 1400, height: 900, show: false, backgroundColor: '#0b0d10',
-    webPreferences: { preload: path.join(__dirname, '../preload/preload.cjs'), contextIsolation: true, sandbox: true }
+    webPreferences: { contextIsolation: true, sandbox: true }
   });
   workspaceWindow.loadURL(store.get('ideonUrl'));
   workspaceWindow.once('ready-to-show', () => workspaceWindow.show());
@@ -101,7 +116,7 @@ function createDesktopWindow() {
     x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height,
     frame: false, resizable: false, movable: false, focusable: false,
     skipTaskbar: true, show: false, backgroundColor: '#000000',
-    webPreferences: { preload: path.join(__dirname, '../preload/preload.cjs'), contextIsolation: true, sandbox: true }
+    webPreferences: { contextIsolation: true, sandbox: true }
   });
   desktopWindow.setMenu(null);
   desktopWindow.loadURL(store.get('ideonUrl'));
@@ -153,11 +168,17 @@ function startIdeonServer() {
     return;
   }
   const serverFile = path.join(serverDir, 'dist', 'server.cjs');
-  const nodeCommand = process.env.NODE_EXECUTABLE || (process.platform === 'win32' ? 'node.exe' : 'node');
+  const nodeCommand = process.env.NODE_EXECUTABLE || process.execPath;
   ideonServer = spawn(nodeCommand, [serverFile], {
     cwd: serverDir,
-    env: { ...process.env, AUTH_TRUST_HOST: 'true', NODE_OPTIONS: '--max-old-space-size=8192' },
-    stdio: 'inherit', windowsHide: true
+    env: {
+      ...process.env,
+      AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST || 'true',
+      AUTH_SECRET: process.env.AUTH_SECRET || getAuthSecret(),
+      NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=8192'
+    },
+    stdio: 'inherit',
+    windowsHide: true
   });
   ideonServer.on('exit', (code) => {
     ideonServer = null;
@@ -180,14 +201,18 @@ ipcMain.handle('dexpad:get-state', () => ({
 }));
 
 ipcMain.handle('dexpad:set-state', (_event, state) => {
-  if (typeof state.ideonUrl === 'string' && state.ideonUrl.trim()) store.set('ideonUrl', state.ideonUrl.trim());
-  if (typeof state.startup === 'boolean') setStartup(state.startup);
-  if (typeof state.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
-  if (typeof state.interactive === 'boolean') setInteractiveMode(state.interactive);
+  if (typeof state?.ideonUrl === 'string' && state.ideonUrl.trim()) store.set('ideonUrl', state.ideonUrl.trim());
+  if (typeof state?.startup === 'boolean') setStartup(state.startup);
+  if (typeof state?.wallpaperMode === 'boolean') setWallpaperMode(state.wallpaperMode);
+  if (typeof state?.interactive === 'boolean') setInteractiveMode(state.interactive);
   return { ideonUrl: store.get('ideonUrl'), startup: store.get('startup'), wallpaperMode: store.get('wallpaperMode'), interactive: store.get('interactive') };
 });
 
 ipcMain.handle('dexpad:open-workspace', () => { createWorkspaceWindow(); return true; });
+ipcMain.handle('dexpad:open-url', (_event, url) => {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) throw new Error('Only http(s) URLs are allowed.');
+  return shell.openExternal(url);
+});
 
 app.whenReady().then(() => {
   if (!app.requestSingleInstanceLock()) return quitApp();
