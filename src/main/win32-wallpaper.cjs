@@ -19,7 +19,7 @@ const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_
 const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [
   'void *', 'void *', 'int32', 'int32', 'int32', 'int32', 'uint32'
 ]);
-const GetClientRect = user32.func('__stdcall', 'GetClientRect', 'int32', ['void *', 'void *']);
+const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', ['void *', 'void *']);
 const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
 const SetForegroundWindow = user32.func('__stdcall', 'SetForegroundWindow', 'int32', ['void *']);
 const BringWindowToTop = user32.func('__stdcall', 'BringWindowToTop', 'int32', ['void *']);
@@ -83,6 +83,8 @@ function findWorkerW() {
     throw new Error('SHELLDLL_DefView parent not found.');
   }
 
+  // This is the canonical WorkerW injection path: the WorkerW immediately
+  // following the window hosting SHELLDLL_DefView is the empty wallpaper host.
   const siblingWorker = FindWindowExW(null, shellViewParent, 'WorkerW', null);
   if (siblingWorker) return siblingWorker;
 
@@ -137,37 +139,36 @@ function activateWindow(browserWindow) {
 function attachToDesktop(browserWindow, bounds) {
   const hwnd = prepareNativeWindow(browserWindow);
   const workerW = findWorkerW();
-
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
   SetWindowLongPtrW(hwnd, GWL_STYLE, (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS);
-  SetParent(hwnd, workerW);
 
-  // SetWindowPos coordinates for a child are relative to the Worker's client
-  // area, not absolute screen coordinates. Use the client origin explicitly.
-  // This prevents the wallpaper panel from being placed off-screen after
-  // SetParent on Windows 10/11.
-  const clientRect = Buffer.alloc(16);
-  if (!GetClientRect(workerW, clientRect)) {
-    throw new Error('Failed to query WorkerW client area.');
+  if (!SetParent(hwnd, workerW)) {
+    throw new Error('SetParent failed while attaching DexPad to WorkerW.');
   }
-  const clientLeft = clientRect.readInt32LE(0);
-  const clientTop = clientRect.readInt32LE(4);
 
-  const x = Math.round(bounds.x - clientLeft);
-  const y = Math.round(bounds.y - clientTop);
+  // Child-window coordinates are relative to the Worker's client origin.
+  // Query the Worker's actual screen rectangle and convert DexPad's desired
+  // screen-space panel bounds into the correct child coordinates.
+  const parentRect = Buffer.alloc(16);
+  if (!GetWindowRect(workerW, parentRect)) {
+    throw new Error('Failed to query WorkerW screen rectangle.');
+  }
+
+  const parentLeft = parentRect.readInt32LE(0);
+  const parentTop = parentRect.readInt32LE(4);
+  const relativeX = Math.round(bounds.x - parentLeft);
+  const relativeY = Math.round(bounds.y - parentTop);
 
   SetWindowPos(
     hwnd,
     HWND_TOP,
-    x,
-    y,
+    relativeX,
+    relativeY,
     bounds.width,
     bounds.height,
     SWP_NOACTIVATE | SWP_SHOWWINDOW
   );
 
-  // Explicitly bring the child to the top of the selected WorkerW while
-  // leaving the WorkerW itself below the desktop icon layer.
   ShowWindow(hwnd, SW_SHOWNOACTIVATE);
   return true;
 }
