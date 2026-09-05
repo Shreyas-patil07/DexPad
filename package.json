@@ -1,14 +1,13 @@
 {
   "name": "dexpad-desktop",
-  "version": "0.1.0",
-  "description": "DexPad desktop shell: an Ideon-based interactive Windows desktop workspace.",
+  "version": "0.2.0",
+  "description": "Standalone local Windows desktop workspace with a native wallpaper layer.",
   "main": "src/main/index.cjs",
   "author": "Shreyas Patil",
   "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "electron .",
-    "bootstrap:ideon": "node scripts/bootstrap-ideon.cjs",
     "build": "electron-forge make"
   },
   "dependencies": {
