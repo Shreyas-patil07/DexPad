@@ -211,6 +211,24 @@ function setWallpaperMode(enabled) {
   rebuildTrayMenu();
 }
 
+function createTray() {
+  if (tray) return tray;
+
+  let icon = nativeImage.createEmpty();
+  const iconPath = path.join(__dirname, '../renderer/icon.ico');
+  try {
+    icon = nativeImage.createFromPath(iconPath);
+  } catch (error) {
+    console.warn('[DexPad] Tray icon unavailable, using default icon:', error.message);
+  }
+
+  tray = new Tray(icon);
+  tray.setToolTip('DexPad');
+  tray.on('click', () => setControlWindowOpen(true));
+  rebuildTrayMenu();
+  return tray;
+}
+
 function rebuildTrayMenu() {
   if (!tray) return;
   const wallpaper = store.get('wallpaperMode');
@@ -252,6 +270,10 @@ function quitApp() {
   destroyDesktopWindow();
   if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.destroy();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   app.quit();
 }
 
