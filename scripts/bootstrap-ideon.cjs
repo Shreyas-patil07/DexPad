@@ -31,7 +31,9 @@ execFileSync('corepack', [
   'pnpm', 'add',
   '@tiptap/core@3.31.3',
   '@tiptap/pm@3.31.3',
-  'classic-level@^2.0.1',
+  // level@8.0.1 requires classic-level ^1.2.0. Do not use the nonexistent
+  // 2.0.1 release; 1.4.1 is the newest 1.x release.
+  'classic-level@^1.4.1',
   'katex@^0.16.22',
   'lodash@^4.18.1',
   'prismjs@^1.30.0',
