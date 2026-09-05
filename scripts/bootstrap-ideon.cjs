@@ -43,6 +43,36 @@ execFileSync('corepack', [
   shell: process.platform === 'win32'
 });
 
+// Kysely's FileMigrationProvider dynamically imports migration files. On
+// Windows Node's ESM loader requires absolute filesystem paths to be file://
+// URLs, otherwise paths such as C:\\Users\\... are treated as the `c:` scheme.
+// Inject a Windows-safe importer into Ideon's migration provider before build.
+const migrationsFile = path.join(ideonDir, 'src', 'app', 'lib', 'migrations.ts');
+if (fs.existsSync(migrationsFile)) {
+  let migrationsSource = fs.readFileSync(migrationsFile, 'utf8');
+  if (!migrationsSource.includes('pathToFileURL')) {
+    migrationsSource = migrationsSource.replace(
+      'import * as path from "node:path";\n',
+      'import * as path from "node:path";\nimport { pathToFileURL } from "node:url";\n'
+    );
+  }
+
+  const providerNeedle = '      migrationFolder: path.join(process.cwd(), "src/app/db/migrations"),\n';
+  const providerReplacement =
+    '      migrationFolder: path.join(process.cwd(), "src/app/db/migrations"),\n' +
+    '      import: (modulePath) => import(pathToFileURL(modulePath).href),\n';
+
+  if (!migrationsSource.includes('import: (modulePath) => import(pathToFileURL(modulePath).href)')) {
+    if (!migrationsSource.includes(providerNeedle)) {
+      throw new Error('[DexPad] Could not patch Ideon migrations.ts: migrationFolder line not found.');
+    }
+    migrationsSource = migrationsSource.replace(providerNeedle, providerReplacement);
+  }
+
+  fs.writeFileSync(migrationsFile, migrationsSource, 'utf8');
+  console.log('Ideon Windows migration importer: patched');
+}
+
 // Verify from a Node process directly. Using `shell: true` here breaks the
 // JavaScript `-e` expression on Windows because cmd.exe splits the semicolon.
 execFileSync(process.execPath, ['-e', "require.resolve('classic-level'); console.log('classic-level: OK')"], {
