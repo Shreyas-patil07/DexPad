@@ -7,7 +7,7 @@
   "license": "MIT",
   "private": true,
   "scripts": {
-    "dev": "electron .",
+    "dev": "taskkill /F /IM electron.exe 2>nul & electron .",
     "build": "electron-forge make"
   },
   "dependencies": {
