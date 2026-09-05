@@ -30,19 +30,17 @@ function getPanelBounds() {
   const height = Math.min(760, Math.round(workArea.height * 0.82));
 
   return {
-    // Flush against the right edge of the usable desktop area.
     x: workArea.x + workArea.width - width,
-    // Vertically centered in the usable desktop area.
     y: workArea.y + Math.round((workArea.height - height) / 2),
     width,
     height
   };
 }
 
-// The wallpaper layer intentionally uses the same geometry as the visible
-// DexPad panel, rather than covering the entire monitor with an opaque view.
+// Wallpaper is a full-display transparent host. The renderer draws the
+// visible DexPad panel inside it so the rest of the user's desktop is never cropped.
 function getWallpaperBounds() {
-  return getPanelBounds();
+  return screen.getPrimaryDisplay().bounds;
 }
 
 function normalizeCard(card, index = 0) {
