@@ -43,7 +43,6 @@ fs.writeFileSync(pnpmWorkspace, allowBuildsConfig, 'utf8');
 
 runPnpm(['install', '--no-frozen-lockfile']);
 
-// Explicit dependencies required by Ideon's source/build under pnpm's strict layout.
 runPnpm([
   'add',
   '@tiptap/core@3.31.3',
@@ -56,10 +55,6 @@ runPnpm([
   '@types/lodash@^4.17.20'
 ]);
 
-// Kysely's FileMigrationProvider loads migration files at runtime. Ideon keeps
-// migrations as TypeScript source, while the production server runs as CJS.
-// Compile them with pnpm's own esbuild executable instead of requiring esbuild
-// through Node resolution (which is unreliable with pnpm's strict layout).
 const migrationsSourceDir = path.join(ideonDir, 'src', 'app', 'db', 'migrations');
 const runtimeMigrationsDir = path.join(ideonDir, 'runtime-migrations');
 const migrationsFile = path.join(ideonDir, 'src', 'app', 'lib', 'migrations.ts');
@@ -80,6 +75,8 @@ if (!migrationFiles.length) {
 fs.rmSync(runtimeMigrationsDir, { recursive: true, force: true });
 fs.mkdirSync(runtimeMigrationsDir, { recursive: true });
 
+// Build each migration as an independent CJS module so Kysely can load them
+// at runtime without depending on the TypeScript source tree.
 const esbuildArgs = [
   'exec', 'esbuild',
   ...migrationFiles.map((name) => path.join(migrationsSourceDir, name)),
@@ -104,8 +101,10 @@ if (!migrationFolderLine.test(migrationsSource)) {
 
 migrationsSource = migrationsSource.replace(migrationFolderLine, migrationFolderReplacement);
 
+// On Windows, Node's ESM loader rejects a raw C:\... path. Convert the path
+// to a file URL before importing the compiled .cjs migration module.
 const providerImportLine = /\s*import:\s*\([^\n]+=>\s*[^\n]+,?\r?\n?/;
-const desiredImportLine = '      import: (modulePath) => import(/* webpackIgnore: true */ modulePath),';
+const desiredImportLine = '      import: (modulePath) => import(require("node:url").pathToFileURL(modulePath).href),';
 
 if (providerImportLine.test(migrationsSource)) {
   migrationsSource = migrationsSource.replace(providerImportLine, `\n${desiredImportLine}\n`);
