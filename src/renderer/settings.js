@@ -5,7 +5,6 @@ async function load() {
   $('url').value = state.ideonUrl;
   $('startup').checked = state.startup;
   $('wallpaper').checked = state.wallpaperMode;
-  $('interactive').checked = state.interactive;
   $('status').textContent = 'Ready';
 }
 
@@ -15,13 +14,23 @@ $('save').addEventListener('click', async () => {
     await window.dexpad.setState({
       ideonUrl: $('url').value,
       startup: $('startup').checked,
-      wallpaperMode: $('wallpaper').checked,
-      interactive: $('interactive').checked
+      wallpaperMode: $('wallpaper').checked
     });
     $('status').textContent = 'Saved';
   } catch (error) {
     console.error(error);
     $('status').textContent = 'Failed to save';
+  }
+});
+
+$('publish').addEventListener('click', async () => {
+  $('status').textContent = 'Publishing…';
+  try {
+    const published = await window.dexpad.refreshWallpaper();
+    $('status').textContent = published ? 'Published' : 'Wallpaper is disabled';
+  } catch (error) {
+    console.error(error);
+    $('status').textContent = 'Failed to publish';
   }
 });
 
