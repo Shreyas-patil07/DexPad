@@ -89,7 +89,6 @@ const esbuildArgs = [
   '--format=cjs',
   '--target=node20',
   '--out-extension:.js=.cjs',
-  '--sourcemap=false',
   '--log-level=warning',
   `--tsconfig=${path.join(ideonDir, 'tsconfig.json')}`
 ];
