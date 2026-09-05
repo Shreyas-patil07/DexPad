@@ -102,7 +102,9 @@ function createWorkspaceWindow() {
     backgroundColor: '#0b0d10',
     webPreferences: { contextIsolation: true, sandbox: true }
   });
-  workspaceWindow.loadURL(store.get('ideonUrl'));
+  workspaceWindow.loadURL(store.get('ideonUrl')).catch((error) => {
+    console.error('[DexPad] Failed to load Ideon workspace:', error);
+  });
   workspaceWindow.once('ready-to-show', () => {
     workspaceWindow.show();
     workspaceWindow.focus();
@@ -149,11 +151,26 @@ function rebuildTrayMenu() {
   ]));
 }
 
+function showDesktopWallpaper() {
+  if (!desktopWindow || desktopWindow.isDestroyed()) return;
+  const bounds = getPanelBounds();
+  try {
+    attachToDesktop(desktopWindow, bounds);
+    setClickThrough(desktopWindow, true);
+    desktopWindow.setIgnoreMouseEvents(true);
+    desktopWindow.showInactive();
+    sendToBottom(desktopWindow);
+  } catch (error) {
+    console.error('[DexPad] WorkerW attachment failed:', error);
+  }
+}
+
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
   const bounds = getPanelBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
+    showDesktopWallpaper();
     return desktopWindow;
   }
 
@@ -173,18 +190,38 @@ function createDesktopWindow() {
   });
   desktopWindow.setMenu(null);
   desktopWindow.setIgnoreMouseEvents(true);
-  desktopWindow.loadURL(store.get('ideonUrl'));
-  desktopWindow.once('ready-to-show', () => {
-    try {
-      attachToDesktop(desktopWindow, bounds);
-      setClickThrough(desktopWindow, true);
-      desktopWindow.showInactive();
-      sendToBottom(desktopWindow);
-    } catch (error) {
-      console.error('[DexPad] WorkerW attachment failed:', error);
-    }
+
+  const ideonUrl = store.get('ideonUrl');
+  let reloadTimer = null;
+  let shown = false;
+
+  const tryShow = () => {
+    if (shown || !desktopWindow || desktopWindow.isDestroyed()) return;
+    shown = true;
+    showDesktopWallpaper();
+  };
+
+  desktopWindow.webContents.on('did-finish-load', tryShow);
+  desktopWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || shuttingDown) return;
+    console.warn(`[DexPad] Wallpaper load failed (${errorCode}): ${errorDescription} - ${validatedURL}`);
+    clearTimeout(reloadTimer);
+    reloadTimer = setTimeout(() => {
+      if (desktopWindow && !desktopWindow.isDestroyed()) {
+        desktopWindow.loadURL(ideonUrl).catch(() => {});
+      }
+    }, 1000);
   });
-  desktopWindow.on('closed', () => { desktopWindow = null; });
+
+  desktopWindow.loadURL(ideonUrl).catch((error) => {
+    console.warn('[DexPad] Initial wallpaper load is waiting for Ideon:', error.message);
+  });
+
+  desktopWindow.once('ready-to-show', tryShow);
+  desktopWindow.on('closed', () => {
+    clearTimeout(reloadTimer);
+    desktopWindow = null;
+  });
   return desktopWindow;
 }
 
