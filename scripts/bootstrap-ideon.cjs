@@ -16,7 +16,6 @@ if (!fs.existsSync(path.join(ideonDir, '.git'))) {
 // native modules to compile correctly (SQLite, PTY, SWC, argon2, esbuild, etc.).
 const pnpmWorkspace = path.join(ideonDir, 'pnpm-workspace.yaml');
 const allowBuildsConfig = `# DexPad bootstrap configuration for upstream Ideon\nallowBuilds:\n  '@swc/core': true\n  argon2: true\n  better-sqlite3: true\n  classic-level: true\n  esbuild: true\n  node-pty: true\n  protobufjs: true\n`;
-
 fs.writeFileSync(pnpmWorkspace, allowBuildsConfig, 'utf8');
 
 execFileSync('corepack', ['pnpm', 'install', '--no-frozen-lockfile'], {
@@ -26,8 +25,8 @@ execFileSync('corepack', ['pnpm', 'install', '--no-frozen-lockfile'], {
 });
 
 // Upstream Ideon currently imports several packages that are not declared as
-// direct dependencies. Add them explicitly so a clean DexPad bootstrap can
-// type-check and build reliably with modern pnpm versions.
+// direct dependencies. Keep runtime dependencies explicit so the bundled
+// server can resolve them under pnpm's strict node_modules layout.
 execFileSync('corepack', [
   'pnpm', 'add',
   '@tiptap/core@3.31.3',
@@ -38,6 +37,15 @@ execFileSync('corepack', [
   'prismjs@^1.30.0',
   '@types/lodash@^4.17.20'
 ], {
+  cwd: ideonDir,
+  stdio: 'inherit',
+  shell: process.platform === 'win32'
+});
+
+// The latest pnpm + Next/Tsup combination can leave some transitive runtime
+// packages externalized in dist/server.cjs. Verify the critical runtime module
+// is resolvable before building, so the bootstrap fails at the actual cause.
+execFileSync('corepack', ['pnpm', 'exec', 'node', '-e', "require.resolve('classic-level'); console.log('classic-level: OK')"], {
   cwd: ideonDir,
   stdio: 'inherit',
   shell: process.platform === 'win32'
