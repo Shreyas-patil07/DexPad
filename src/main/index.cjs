@@ -19,6 +19,7 @@ const store = new Store({
 });
 
 let workspaceWindow = null;
+let interactionWindow = null;
 let settingsWindow = null;
 let tray = null;
 let ideonServer = null;
@@ -113,6 +114,42 @@ function createWorkspaceWindow() {
   return workspaceWindow;
 }
 
+function createInteractionWindow() {
+  if (interactionWindow && !interactionWindow.isDestroyed()) {
+    interactionWindow.setBounds(getPanelBounds());
+    interactionWindow.show();
+    return interactionWindow;
+  }
+
+  const bounds = getPanelBounds();
+  interactionWindow = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    frame: false,
+    resizable: false,
+    movable: false,
+    focusable: true,
+    skipTaskbar: true,
+    show: false,
+    backgroundColor: '#0b0d10',
+    webPreferences: { contextIsolation: true, sandbox: true }
+  });
+  interactionWindow.setMenu(null);
+  interactionWindow.setAlwaysOnTop(false);
+  interactionWindow.loadURL(store.get('ideonUrl')).catch((error) => {
+    console.error('[DexPad] Failed to load DexPad interaction overlay:', error);
+  });
+  interactionWindow.once('ready-to-show', () => {
+    if (!store.get('interactive') && store.get('wallpaperMode')) {
+      interactionWindow.showInactive();
+    }
+  });
+  interactionWindow.on('closed', () => { interactionWindow = null; });
+  return interactionWindow;
+}
+
 function createSettingsWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.show();
@@ -165,12 +202,21 @@ function showDesktopWallpaper() {
   }
 }
 
+function showInteractionOverlay() {
+  if (!interactionWindow || interactionWindow.isDestroyed()) return;
+  interactionWindow.setBounds(getPanelBounds());
+  interactionWindow.setIgnoreMouseEvents(false);
+  interactionWindow.setAlwaysOnTop(false);
+  interactionWindow.showInactive();
+}
+
 function createDesktopWindow() {
   if (process.platform !== 'win32') return null;
   const bounds = getPanelBounds();
   if (desktopWindow && !desktopWindow.isDestroyed()) {
     desktopWindow.setBounds(bounds);
     showDesktopWallpaper();
+    createInteractionWindow();
     return desktopWindow;
   }
 
@@ -199,6 +245,7 @@ function createDesktopWindow() {
     if (shown || !desktopWindow || desktopWindow.isDestroyed()) return;
     shown = true;
     showDesktopWallpaper();
+    createInteractionWindow();
   };
 
   desktopWindow.webContents.on('did-finish-load', tryShow);
@@ -225,6 +272,12 @@ function createDesktopWindow() {
   return desktopWindow;
 }
 
+function destroyInteractionWindow() {
+  if (!interactionWindow || interactionWindow.isDestroyed()) return;
+  interactionWindow.destroy();
+  interactionWindow = null;
+}
+
 function destroyDesktopWindow() {
   if (!desktopWindow || desktopWindow.isDestroyed()) return;
   try { detachFromDesktop(desktopWindow); } catch (error) { console.warn(error); }
@@ -233,6 +286,7 @@ function destroyDesktopWindow() {
 }
 
 function enterInteractiveMode() {
+  destroyInteractionWindow();
   destroyDesktopWindow();
   const window = createWorkspaceWindow();
   window.setBounds(getPanelBounds());
@@ -247,11 +301,13 @@ function enterWallpaperMode() {
     workspaceWindow.hide();
   }
   createDesktopWindow();
+  createInteractionWindow();
 }
 
 function setWallpaperMode(enabled) {
   store.set('wallpaperMode', enabled);
   if (!enabled) {
+    destroyInteractionWindow();
     destroyDesktopWindow();
     enterInteractiveMode();
   } else if (store.get('interactive')) {
@@ -309,6 +365,7 @@ function startIdeonServer() {
 
 function quitApp() {
   shuttingDown = true;
+  destroyInteractionWindow();
   destroyDesktopWindow();
   if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.destroy();
   if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
@@ -358,7 +415,10 @@ app.whenReady().then(() => {
     if (store.get('interactive')) {
       if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.setBounds(getPanelBounds());
     } else if (store.get('wallpaperMode')) {
+      if (desktopWindow && !desktopWindow.isDestroyed()) desktopWindow.setBounds(getPanelBounds());
+      if (interactionWindow && !interactionWindow.isDestroyed()) interactionWindow.setBounds(getPanelBounds());
       createDesktopWindow();
+      createInteractionWindow();
     }
   };
   screen.on('display-metrics-changed', refresh);
