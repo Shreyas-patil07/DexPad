@@ -41,6 +41,31 @@ function getAuthSecret() {
   return secret;
 }
 
+function getNodeExecutable() {
+  if (process.env.NODE_EXECUTABLE && fs.existsSync(process.env.NODE_EXECUTABLE)) {
+    return process.env.NODE_EXECUTABLE;
+  }
+
+  if (process.env.NODE && fs.existsSync(process.env.NODE)) {
+    return process.env.NODE;
+  }
+
+  if (process.platform === 'win32') {
+    const candidates = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+      process.env.ProgramFiles ? path.join(process.env.ProgramFiles, 'nodejs', 'node.exe') : null,
+      process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Programs', 'nodejs', 'node.exe') : null
+    ].filter(Boolean);
+
+    const systemNode = candidates.find((candidate) => fs.existsSync(candidate));
+    if (systemNode) return systemNode;
+  }
+
+  // Fall back to PATH resolution. This is the normal path for development and
+  // also works for packaged installs when Node.js is installed system-wide.
+  return 'node';
+}
+
 function createWorkspaceWindow() {
   if (workspaceWindow && !workspaceWindow.isDestroyed()) {
     workspaceWindow.show();
@@ -167,8 +192,9 @@ function startIdeonServer() {
     console.warn('[DexPad] No built Ideon server found. Run npm run bootstrap:ideon or set IDEON_URL.');
     return;
   }
+
   const serverFile = path.join(serverDir, 'dist', 'server.cjs');
-  const nodeCommand = process.env.NODE_EXECUTABLE || process.execPath;
+  const nodeCommand = getNodeExecutable();
   const childEnv = {
     ...process.env,
     AUTH_TRUST_HOST: process.env.AUTH_TRUST_HOST || 'true',
@@ -176,13 +202,7 @@ function startIdeonServer() {
     NODE_OPTIONS: process.env.NODE_OPTIONS || '--max-old-space-size=8192'
   };
 
-  // In Electron, process.execPath is electron.exe rather than node.exe.
-  // Explicitly put spawned Electron children into Node mode so the Ideon CJS
-  // server is executed by Electron's embedded Node runtime instead of being
-  // interpreted as another Electron application.
-  if (!process.env.NODE_EXECUTABLE) {
-    childEnv.ELECTRON_RUN_AS_NODE = '1';
-  }
+  console.log(`[DexPad] Starting Ideon with Node: ${nodeCommand}`);
 
   ideonServer = spawn(nodeCommand, [serverFile], {
     cwd: serverDir,
@@ -190,12 +210,18 @@ function startIdeonServer() {
     stdio: 'inherit',
     windowsHide: true
   });
+
+  ideonServer.on('spawn', () => {
+    console.log('[DexPad] Ideon server process started.');
+  });
+
   ideonServer.on('exit', (code, signal) => {
     ideonServer = null;
     if (!shuttingDown && (code || signal)) {
       console.error(`[DexPad] Ideon server exited with code ${code} signal ${signal || 'none'}`);
     }
   });
+
   ideonServer.on('error', (error) => {
     ideonServer = null;
     if (!shuttingDown) console.error('[DexPad] Failed to start Ideon server:', error);
