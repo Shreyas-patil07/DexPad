@@ -21,17 +21,18 @@ let shuttingDown = false;
 const workspaceFile = path.join(__dirname, '../renderer/workspace.html');
 
 function getPrimaryWorkArea() {
-  const display = screen.getPrimaryDisplay();
-  return display.workArea;
+  return screen.getPrimaryDisplay().workArea;
 }
 
 function getPanelBounds() {
   const workArea = getPrimaryWorkArea();
-  const width = Math.min(960, Math.round(workArea.width * 0.52));
-  const height = Math.min(820, Math.round(workArea.height * 0.84));
-  const margin = Math.max(24, Math.round(workArea.width * 0.02));
+  const width = Math.min(720, Math.round(workArea.width * 0.42));
+  const height = Math.min(760, Math.round(workArea.height * 0.82));
+
   return {
-    x: workArea.x + workArea.width - width - margin,
+    // Flush against the right edge, with no right-side gap.
+    x: workArea.x + workArea.width - width,
+    // Vertically centered in the usable desktop area.
     y: workArea.y + Math.round((workArea.height - height) / 2),
     width,
     height
@@ -39,8 +40,7 @@ function getPanelBounds() {
 }
 
 function getWallpaperBounds() {
-  const display = screen.getPrimaryDisplay();
-  return display.bounds;
+  return screen.getPrimaryDisplay().bounds;
 }
 
 function normalizeCard(card, index = 0) {
@@ -90,6 +90,8 @@ function setStartup(enabled) {
 
 function createWorkspaceWindow() {
   if (workspaceWindow && !workspaceWindow.isDestroyed()) {
+    const bounds = getPanelBounds();
+    workspaceWindow.setBounds(bounds);
     workspaceWindow.show();
     workspaceWindow.focus();
     return workspaceWindow;
@@ -118,6 +120,7 @@ function createWorkspaceWindow() {
     console.error('[DexPad] Failed to load local workspace:', error);
   });
   workspaceWindow.once('ready-to-show', () => {
+    workspaceWindow.setBounds(getPanelBounds());
     workspaceWindow.show();
     workspaceWindow.focus();
   });
@@ -205,6 +208,7 @@ function refreshWallpaper() {
 function setControlWindowOpen(enabled) {
   if (enabled) {
     const window = createWorkspaceWindow();
+    window.setBounds(getPanelBounds());
     window.show();
     window.focus();
   } else if (workspaceWindow && !workspaceWindow.isDestroyed()) {
@@ -219,7 +223,6 @@ function setWallpaperMode(enabled) {
     if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.hide();
   } else {
     destroyDesktopWindow();
-    if (!workspaceWindow || workspaceWindow.isDestroyed()) createWorkspaceWindow();
     setControlWindowOpen(true);
   }
   publishState();
@@ -332,6 +335,7 @@ app.whenReady().then(() => {
 
   const refresh = () => {
     if (store.get('wallpaperMode')) refreshWallpaper();
+    else if (workspaceWindow && !workspaceWindow.isDestroyed()) workspaceWindow.setBounds(getPanelBounds());
   };
   screen.on('display-metrics-changed', refresh);
   screen.on('display-added', refresh);
