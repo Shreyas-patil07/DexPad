@@ -146,13 +146,27 @@ function createWorkspaceWindow() {
   return workspaceWindow;
 }
 
-// Retry up to MAX_ATTACH_RETRIES times if Progman hasn't initialised yet
+// Retry up to MAX_ATTACH_RETRIES times if Progman hasn't initialised yet.
+// attachInProgress prevents concurrent retries when both did-finish-load
+// and ready-to-show fire near-simultaneously.
 const MAX_ATTACH_RETRIES = 5;
 const ATTACH_RETRY_MS = 800;
 let attachRetries = 0;
+let attachInProgress = false;
 
 function showDesktopWallpaper() {
   if (!desktopWindow || desktopWindow.isDestroyed() || !wallpaperApi) return;
+  if (attachInProgress) return; // another retry chain is already running
+  attachInProgress = true;
+  _tryAttach();
+}
+
+function _tryAttach() {
+  if (!desktopWindow || desktopWindow.isDestroyed()) {
+    attachInProgress = false;
+    attachRetries = 0;
+    return;
+  }
   try {
     const bounds = getWallpaperBounds();
     desktopWindow.setBounds(bounds);
@@ -161,16 +175,24 @@ function showDesktopWallpaper() {
     desktopWindow.setIgnoreMouseEvents(true);
     desktopWindow.showInactive();
     wallpaperApi.sendToBottom(desktopWindow);
-    attachRetries = 0; // reset on success
+    attachRetries = 0;
+    attachInProgress = false;
   } catch (err) {
-    // Progman may not be ready immediately — retry a few times
     if (attachRetries < MAX_ATTACH_RETRIES) {
       attachRetries++;
       console.warn(`[DexPad] WorkerW attach failed (attempt ${attachRetries}/${MAX_ATTACH_RETRIES}), retrying in ${ATTACH_RETRY_MS}ms…`);
-      setTimeout(showDesktopWallpaper, ATTACH_RETRY_MS);
+      setTimeout(_tryAttach, ATTACH_RETRY_MS);
     } else {
-      console.error('[DexPad] WorkerW attachment permanently failed:', err);
+      // All retries exhausted — wallpaper mode can't attach to WorkerW in
+      // this session. Disable wallpaper mode and open the normal panel window
+      // so the user always has a visible UI to work with.
+      console.error('[DexPad] WorkerW attachment permanently failed. Falling back to control window.', err);
       attachRetries = 0;
+      attachInProgress = false;
+      store.set('wallpaperMode', false);
+      destroyDesktopWindow();
+      rebuildTrayMenu();
+      setControlWindowOpen(true);
     }
   }
 }
