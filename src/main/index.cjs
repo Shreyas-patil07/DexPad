@@ -12,19 +12,34 @@ if (process.platform === 'win32') {
 }
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
-const store = new Store({ name:'dexpad', defaults:{ schemaVersion:CURRENT_SCHEMA_VERSION, startup:false, wallpaperMode:true, cards:[], connections:[] } });
+const store = new Store({ name:'dexpad', defaults:{ schemaVersion:CURRENT_SCHEMA_VERSION, startup:false, wallpaperMode:true, cards:[], connections:[], profiles:[], activeProfileId:null } });
 const migrated = migrateState(store.store);
-if (store.get('schemaVersion') !== CURRENT_SCHEMA_VERSION) {
-  store.set('schemaVersion', CURRENT_SCHEMA_VERSION);
-  store.set('cards', migrated.cards);
-  store.set('connections', migrated.connections);
-} else if (!Array.isArray(store.get('connections'))) store.set('connections', migrated.connections);
 
+function profileId() { return `profile-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
+function normalizeProfiles(rawProfiles, legacyState = migrated) {
+  const source = Array.isArray(rawProfiles) ? rawProfiles : [];
+  const profiles = source.map((p, i) => {
+    const id = typeof p?.id === 'string' && p.id.trim() ? p.id.trim() : profileId();
+    const name = typeof p?.name === 'string' && p.name.trim() ? p.name.trim().slice(0,80) : `Profile ${i + 1}`;
+    const cards = normalizeCardGraph(Array.isArray(p?.cards) ? p.cards.map((c,j)=>normalizeCard(c,j)).filter(Boolean) : []);
+    return { id, name, cards, connections: normalizeConnections(p?.connections, cards) };
+  }).filter(Boolean);
+  if (profiles.length) return profiles;
+  return [{ id:profileId(), name:'Profile 1', cards:legacyState.cards, connections:legacyState.connections }];
+}
+let profiles = normalizeProfiles(store.get('profiles'), migrated);
+let activeProfileId = typeof store.get('activeProfileId') === 'string' && profiles.some(p=>p.id===store.get('activeProfileId')) ? store.get('activeProfileId') : profiles[0].id;
+store.set('profiles', profiles);
+store.set('activeProfileId', activeProfileId);
+store.set('schemaVersion', CURRENT_SCHEMA_VERSION);
+
+let wallpaperApiReady = true;
 let workspaceWin = null, desktopWin = null, settingsWin = null, tray = null, quitting = false;
 const RENDERER = path.join(__dirname, '../renderer');
 const WORKSPACE_HTML = path.join(RENDERER, 'workspace.html');
-const PRELOAD = path.join(__dirname, '../preload/preload.cjs');
+const PRELOAD = path.join(RENDERER, '../preload/preload.cjs');
 
+function getActiveProfile() { return profiles.find(p=>p.id===activeProfileId) || profiles[0]; }
 function getControlDisplay() {
   try { const pt = screen.getCursorScreenPoint(); return screen.getDisplayNearestPoint(pt) || screen.getPrimaryDisplay(); }
   catch (_) { return screen.getPrimaryDisplay(); }
@@ -44,12 +59,11 @@ function wallpaperNativePosition(_display, dipBounds) {
   const p = screen.dipToScreenPoint({x:dipBounds.x, y:dipBounds.y});
   return {x:Math.round(p.x), y:Math.round(p.y), width:dipBounds.width, height:dipBounds.height};
 }
-function getCards() {
-  const raw = store.get('cards');
-  return normalizeCardGraph(Array.isArray(raw) ? raw.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
-}
-function getConnections() { return normalizeConnections(store.get('connections'), getCards()); }
-function currentState() { return {schemaVersion:CURRENT_SCHEMA_VERSION,startup:Boolean(store.get('startup')),wallpaperMode:typeof store.get('wallpaperMode')==='boolean'?store.get('wallpaperMode'):true,cards:getCards(),connections:getConnections()}; }
+function getCards() { const p=getActiveProfile(); return normalizeCardGraph(p?.cards || []); }
+function getConnections() { const p=getActiveProfile(); return normalizeConnections(p?.connections, getCards()); }
+function profileSummary() { return profiles.map(p=>({id:p.id,name:p.name})); }
+function currentState() { return {schemaVersion:CURRENT_SCHEMA_VERSION,startup:Boolean(store.get('startup')),wallpaperMode:typeof store.get('wallpaperMode')==='boolean'?store.get('wallpaperMode'):true,profiles:profileSummary(),activeProfileId,cards:getCards(),connections:getConnections()}; }
+function persistProfiles() { store.set('profiles', profiles); store.set('activeProfileId', activeProfileId); }
 function publishState(excludeSender = null) {
   if (quitting) return;
   const state = currentState();
@@ -64,7 +78,11 @@ function saveWorkspace(rawCards, rawConnections, excludeSender = null) {
   const operation = saveQueue.then(() => {
     const normalizedCards = normalizeCardGraph(Array.isArray(rawCards) ? rawCards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
     const normalizedConnections = normalizeConnections(rawConnections, normalizedCards);
-    store.set('cards', normalizedCards); store.set('connections', normalizedConnections); publishState(excludeSender);
+    const p = getActiveProfile();
+    p.cards = normalizedCards; p.connections = normalizedConnections;
+    persistProfiles();
+    store.set('cards', normalizedCards); store.set('connections', normalizedConnections);
+    publishState(excludeSender);
     return {cards:normalizedCards, connections:normalizedConnections};
   });
   saveQueue = operation.catch(err => console.error('[DexPad] saveWorkspace error:', err));
@@ -73,9 +91,21 @@ function saveWorkspace(rawCards, rawConnections, excludeSender = null) {
 function saveWorkspaceSync(payload) {
   const normalizedCards = normalizeCardGraph(Array.isArray(payload?.cards) ? payload.cards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
   const normalizedConnections = normalizeConnections(payload?.connections, normalizedCards);
+  const p = getActiveProfile();
+  p.cards = normalizedCards; p.connections = normalizedConnections;
+  persistProfiles();
   store.set('cards', normalizedCards); store.set('connections', normalizedConnections);
 }
 function applyStartup(enabled){ store.set('startup',enabled); app.setLoginItemSettings({openAtLogin:enabled,args:['--hidden']}); }
+function switchProfile(id) {
+  if (!profiles.some(p=>p.id===id)) throw new Error('Profile not found.');
+  activeProfileId=id; persistProfiles(); publishState(); return currentState();
+}
+function createProfile(name) {
+  const clean = typeof name === 'string' && name.trim() ? name.trim().slice(0,80) : `Profile ${profiles.length + 1}`;
+  const p = {id:profileId(),name:clean,cards:[],connections:[]};
+  profiles.push(p); activeProfileId=p.id; persistProfiles(); publishState(); return currentState();
+}
 function showControlWindow(){
   if(workspaceWin&&!workspaceWin.isDestroyed()){if(!workspaceWin.isVisible())workspaceWin.show();workspaceWin.focus();return workspaceWin;}
   return createControlWindow();
@@ -120,6 +150,9 @@ ipcMain.handle('dexpad:get-state',()=>currentState());
 ipcMain.handle('dexpad:save-cards',(event,rawCards)=>saveWorkspace(rawCards,getConnections(),event.sender).then(r=>r.cards));
 ipcMain.handle('dexpad:save-workspace',(event,payload)=>saveWorkspace(payload?.cards,payload?.connections,event.sender));
 ipcMain.on('dexpad:save-workspace-sync',(event,payload)=>{try{saveWorkspaceSync(payload);event.returnValue=true;}catch(err){console.error('[DexPad] sync save failed:',err);event.returnValue=false;}});
+ipcMain.handle('dexpad:get-profiles',()=>({profiles:profileSummary(),activeProfileId}));
+ipcMain.handle('dexpad:switch-profile',(_,id)=>switchProfile(id));
+ipcMain.handle('dexpad:create-profile',(_,name)=>createProfile(name));
 ipcMain.handle('dexpad:set-startup',(_,enabled)=>{if(typeof enabled==='boolean'){applyStartup(enabled);publishState();}return currentState();});
 ipcMain.handle('dexpad:set-wallpaper-mode',(_,enabled)=>{if(typeof enabled==='boolean')setWallpaperMode(enabled);return currentState();});
 ipcMain.handle('dexpad:set-state',(_,state)=>{if(typeof state?.startup==='boolean')applyStartup(state.startup);if(typeof state?.wallpaperMode==='boolean')setWallpaperMode(state.wallpaperMode);return currentState();});
