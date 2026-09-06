@@ -4,6 +4,7 @@ const { app, BrowserWindow, globalShortcut, ipcMain, screen, Menu, Tray, nativeI
 const path = require('node:path');
 const Store = require('electron-store');
 const { CURRENT_SCHEMA_VERSION, isValidUrl, normalizeCard, normalizeCardGraph, normalizeConnections, migrateState } = require('./card-schema.cjs');
+const { MAX_PROFILES, MAX_PROFILE_NAME, makeProfileId, cleanProfileName, uniqueProfileName, normalizeProfileList } = require('./profile-schema.cjs');
 
 let wallpaperApi = null;
 if (process.platform === 'win32') {
@@ -12,22 +13,10 @@ if (process.platform === 'win32') {
 }
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0); }
 
-const store = new Store({ name:'dexpad', defaults:{ schemaVersion:CURRENT_SCHEMA_VERSION, startup:false, wallpaperMode:true, cards:[], connections:[], profiles:[], activeProfileId:null } });
-const migrated = migrateState(store.store);
+const store = new Store({ name:'dexpad', defaults:{ schemaVersion:CURRENT_SCHEMA_VERSION, startup:false, wallpaperMode:true, profiles:[], activeProfileId:null } });
+const legacyState = migrateState(store.store);
 
-function profileId() { return `profile-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
-function normalizeProfiles(rawProfiles, legacyState = migrated) {
-  const source = Array.isArray(rawProfiles) ? rawProfiles : [];
-  const profiles = source.map((p, i) => {
-    const id = typeof p?.id === 'string' && p.id.trim() ? p.id.trim() : profileId();
-    const name = typeof p?.name === 'string' && p.name.trim() ? p.name.trim().slice(0,80) : `Profile ${i + 1}`;
-    const cards = normalizeCardGraph(Array.isArray(p?.cards) ? p.cards.map((c,j)=>normalizeCard(c,j)).filter(Boolean) : []);
-    return { id, name, cards, connections: normalizeConnections(p?.connections, cards) };
-  }).filter(Boolean);
-  if (profiles.length) return profiles;
-  return [{ id:profileId(), name:'Profile 1', cards:legacyState.cards, connections:legacyState.connections }];
-}
-let profiles = normalizeProfiles(store.get('profiles'), migrated);
+let profiles = normalizeProfileList(store.get('profiles'), normalizeCardGraph, normalizeConnections, legacyState);
 let activeProfileId = typeof store.get('activeProfileId') === 'string' && profiles.some(p=>p.id===store.get('activeProfileId')) ? store.get('activeProfileId') : profiles[0].id;
 store.set('profiles', profiles);
 store.set('activeProfileId', activeProfileId);
@@ -74,43 +63,89 @@ function publishState(excludeSender = null) {
 }
 
 let saveQueue = Promise.resolve();
-function saveWorkspace(rawCards, rawConnections, excludeSender = null) {
+// note: captures targetProfileId at request time to prevent cross-profile save race conditions
+function saveWorkspace(rawCards, rawConnections, excludeSender = null, targetProfileId = null) {
+  let cardsInput = rawCards;
+  let connectionsInput = rawConnections;
+  let boundProfileId = targetProfileId;
+
+  if (rawCards && typeof rawCards === 'object' && !Array.isArray(rawCards) && Array.isArray(rawCards.cards)) {
+    cardsInput = rawCards.cards;
+    connectionsInput = rawCards.connections;
+    boundProfileId = rawCards.profileId || boundProfileId;
+  }
+
+  const profileIdToSave = boundProfileId || activeProfileId;
+
   const operation = saveQueue.then(() => {
-    const normalizedCards = normalizeCardGraph(Array.isArray(rawCards) ? rawCards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
-    const normalizedConnections = normalizeConnections(rawConnections, normalizedCards);
-    const p = getActiveProfile();
-    p.cards = normalizedCards; p.connections = normalizedConnections;
+    const normalizedCards = normalizeCardGraph(Array.isArray(cardsInput) ? cardsInput.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
+    const normalizedConnections = normalizeConnections(connectionsInput, normalizedCards);
+    const p = profiles.find(x => x.id === profileIdToSave);
+    if (!p) {
+      console.warn('[DexPad] Save ignored: target profile not found:', profileIdToSave);
+      return { cards: normalizedCards, connections: normalizedConnections };
+    }
+    p.cards = normalizedCards;
+    p.connections = normalizedConnections;
     persistProfiles();
-    store.set('cards', normalizedCards); store.set('connections', normalizedConnections);
     publishState(excludeSender);
-    return {cards:normalizedCards, connections:normalizedConnections};
+    return { cards: normalizedCards, connections: normalizedConnections };
   });
   saveQueue = operation.catch(err => console.error('[DexPad] saveWorkspace error:', err));
   return operation;
 }
+
 function saveWorkspaceSync(payload) {
+  const profileIdToSave = payload?.profileId || activeProfileId;
+  const p = profiles.find(x => x.id === profileIdToSave);
+  if (!p) return;
   const normalizedCards = normalizeCardGraph(Array.isArray(payload?.cards) ? payload.cards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
   const normalizedConnections = normalizeConnections(payload?.connections, normalizedCards);
-  const p = getActiveProfile();
-  p.cards = normalizedCards; p.connections = normalizedConnections;
+  p.cards = normalizedCards;
+  p.connections = normalizedConnections;
   persistProfiles();
-  store.set('cards', normalizedCards); store.set('connections', normalizedConnections);
 }
+
 function applyStartup(enabled){ store.set('startup',enabled); app.setLoginItemSettings({openAtLogin:enabled,args:['--hidden']}); }
+
 function switchProfile(id) {
   if (!profiles.some(p=>p.id===id)) throw new Error('Profile not found.');
-  activeProfileId=id; persistProfiles(); publishState(); return currentState();
+  // note: drain saveQueue so pending saves land in the outgoing profile before activeProfileId changes
+  const op = saveQueue.then(() => {
+    activeProfileId = id;
+    persistProfiles();
+    publishState();
+    return currentState();
+  });
+  saveQueue = op.catch(err => console.error('[DexPad] switchProfile error:', err));
+  return op;
 }
+
 function createProfile(name) {
-  const clean = typeof name === 'string' && name.trim() ? name.trim().slice(0,80) : `Profile ${profiles.length + 1}`;
-  const p = {id:profileId(),name:clean,cards:[],connections:[]};
-  profiles.push(p); activeProfileId=p.id; persistProfiles(); publishState(); return currentState();
+  if (profiles.length >= MAX_PROFILES) {
+    throw new Error(`Maximum profile limit (${MAX_PROFILES}) reached.`);
+  }
+  const clean = uniqueProfileName(name, profiles.map(p => p.name), profiles.length + 1);
+  const newId = makeProfileId(new Set(profiles.map(p => p.id)));
+  const p = { id: newId, name: clean, cards: [], connections: [] };
+
+  const op = saveQueue.then(() => {
+    profiles.push(p);
+    activeProfileId = p.id;
+    persistProfiles();
+    publishState();
+    return currentState();
+  });
+  saveQueue = op.catch(err => console.error('[DexPad] createProfile error:', err));
+  return op;
 }
+
 function renameProfile(id, name) {
   const p = profiles.find(profile => profile.id === id);
   if (!p) throw new Error('Profile not found.');
-  const clean = typeof name === 'string' ? name.trim().slice(0,80) : '';
-  if (!clean) throw new Error('Profile name cannot be empty.');
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed) throw new Error('Profile name cannot be empty.');
+  const clean = uniqueProfileName(trimmed, profiles.filter(x => x.id !== id).map(x => x.name));
   p.name = clean;
   persistProfiles();
   publishState();
@@ -126,17 +161,17 @@ function createControlWindow(){
   workspaceWin.once('ready-to-show',()=>{workspaceWin.show();workspaceWin.focus();}); workspaceWin.on('closed',()=>{workspaceWin=null;}); return workspaceWin;
 }
 
-const ATTACH_MAX=6, ATTACH_DELAY=1000; let attachTries=0, attachBusy=false, attachTimer=null, explorerWatchTimer=null;
+const ATTACH_MAX=6, ATTACH_DELAY=1000; let attachTries=0, attachBusy=false, attachTimer=null, explorerWatchTimer=null, isWallpaperAttached=false;
 function attachWallpaper(){if(!desktopWin||desktopWin.isDestroyed()||!wallpaperApi||attachBusy)return;if(attachTimer){clearTimeout(attachTimer);attachTimer=null;}attachBusy=true;doAttach();}
 function doAttach(){
   if(!desktopWin||desktopWin.isDestroyed()){attachBusy=false;attachTries=0;return;}
   try{
     const display=getWallpaperDisplay(),bounds=wallpaperPanelBounds(display),nativeBounds=wallpaperNativePosition(display,bounds);
     desktopWin.setBounds(bounds); wallpaperApi.attachToDesktop(desktopWin,nativeBounds); wallpaperApi.setClickThrough(desktopWin,true); desktopWin.setIgnoreMouseEvents(true); desktopWin.showInactive(); wallpaperApi.sendToBottom(desktopWin);
-    attachTries=0;attachBusy=false;attachTimer=null;console.log('[DexPad] Wallpaper panel attached to desktop.');
+    attachTries=0;attachBusy=false;attachTimer=null;isWallpaperAttached=true;console.log('[DexPad] Wallpaper panel attached to desktop.');
   }catch(err){
     if(attachTries<ATTACH_MAX){attachTries++;console.warn(`[DexPad] Wallpaper attach attempt ${attachTries}/${ATTACH_MAX} failed: ${err.message}`);attachTimer=setTimeout(doAttach,ATTACH_DELAY);return;}
-    console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.',err.message);attachTries=0;attachBusy=false;attachTimer=null;store.set('wallpaperMode',false);destroyDesktopWindow();rebuildTray();showControlWindow();
+    console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.',err.message);attachTries=0;attachBusy=false;attachTimer=null;isWallpaperAttached=false;store.set('wallpaperMode',false);destroyDesktopWindow();rebuildTray();showControlWindow();
   }
 }
 function createDesktopWindow(){
@@ -146,9 +181,9 @@ function createDesktopWindow(){
   desktopWin.setMenu(null);desktopWin.setIgnoreMouseEvents(true);desktopWin.loadFile(WORKSPACE_HTML,{search:'mode=wallpaper'}).catch(e=>console.warn('[DexPad] Failed to load wallpaper view:',e.message));
   desktopWin.webContents.once('did-finish-load',()=>{attachTimer=setTimeout(attachWallpaper,150);});desktopWin.on('closed',()=>{desktopWin=null;});return desktopWin;
 }
-function destroyDesktopWindow(){if(attachTimer){clearTimeout(attachTimer);attachTimer=null;}attachBusy=false;attachTries=0;if(!desktopWin||desktopWin.isDestroyed())return;if(wallpaperApi){try{wallpaperApi.detachFromDesktop(desktopWin);}catch(_){}}desktopWin.destroy();desktopWin=null;}
+function destroyDesktopWindow(){if(attachTimer){clearTimeout(attachTimer);attachTimer=null;}attachBusy=false;attachTries=0;isWallpaperAttached=false;if(!desktopWin||desktopWin.isDestroyed())return;if(wallpaperApi){try{wallpaperApi.detachFromDesktop(desktopWin);}catch(_){}}desktopWin.destroy();desktopWin=null;}
 function refreshWallpaper(){if(!store.get('wallpaperMode')||process.platform!=='win32')return false;if(!desktopWin||desktopWin.isDestroyed()){createDesktopWindow();return true;}publishState();attachWallpaper();return true;}
-function startExplorerWatch(){if(explorerWatchTimer)clearInterval(explorerWatchTimer);explorerWatchTimer=setInterval(()=>{if(quitting||!store.get('wallpaperMode'))return;if(desktopWin&&!desktopWin.isDestroyed()&&wallpaperApi&&!wallpaperApi.isWindowAttached(desktopWin)){console.warn('[DexPad] Desktop attachment lost. Re-attaching…');attachWallpaper();}},4000);}
+function startExplorerWatch(){if(explorerWatchTimer)clearInterval(explorerWatchTimer);explorerWatchTimer=setInterval(()=>{if(quitting||!store.get('wallpaperMode'))return;if(isWallpaperAttached&&!attachBusy&&desktopWin&&!desktopWin.isDestroyed()&&wallpaperApi&&!wallpaperApi.isWindowAttached(desktopWin)){console.warn('[DexPad] Desktop attachment lost. Re-attaching…');isWallpaperAttached=false;attachWallpaper();}},4000);}
 function setWallpaperMode(enabled){store.set('wallpaperMode',enabled);if(enabled){if(!desktopWin||desktopWin.isDestroyed())createDesktopWindow();if(workspaceWin&&!workspaceWin.isDestroyed())workspaceWin.hide();}else{destroyDesktopWindow();showControlWindow();}publishState();rebuildTray();}
 function buildTrayIcon(){for(const p of[path.join(__dirname,'../../assets/icon.png'),path.join(__dirname,'../assets/icon.png'),path.join(__dirname,'../../assets/icon.ico')]){try{const img=nativeImage.createFromPath(p);if(!img.isEmpty())return img;}catch(_){}}return nativeImage.createEmpty();}
 function createTray(){if(tray)return;tray=new Tray(buildTrayIcon());tray.setToolTip('DexPad — right-click for options');tray.on('click',()=>showControlWindow());rebuildTray();}
@@ -157,8 +192,8 @@ function showSettingsWindow(){if(settingsWin&&!settingsWin.isDestroyed()){settin
 function quitApp(){quitting=true;if(explorerWatchTimer){clearInterval(explorerWatchTimer);explorerWatchTimer=null;}if(attachTimer){clearTimeout(attachTimer);attachTimer=null;}globalShortcut.unregisterAll();destroyDesktopWindow();workspaceWin?.destroy();settingsWin?.destroy();tray?.destroy();app.quit();}
 
 ipcMain.handle('dexpad:get-state',()=>currentState());
-ipcMain.handle('dexpad:save-cards',(event,rawCards)=>saveWorkspace(rawCards,getConnections(),event.sender).then(r=>r.cards));
-ipcMain.handle('dexpad:save-workspace',(event,payload)=>saveWorkspace(payload?.cards,payload?.connections,event.sender));
+ipcMain.handle('dexpad:save-cards',(event,rawCards)=>saveWorkspace(rawCards,getConnections(),event.sender,activeProfileId).then(r=>r.cards));
+ipcMain.handle('dexpad:save-workspace',(event,payload)=>saveWorkspace(payload?.cards,payload?.connections,event.sender,payload?.profileId));
 ipcMain.on('dexpad:save-workspace-sync',(event,payload)=>{try{saveWorkspaceSync(payload);event.returnValue=true;}catch(err){console.error('[DexPad] sync save failed:',err);event.returnValue=false;}});
 ipcMain.handle('dexpad:get-profiles',()=>({profiles:profileSummary(),activeProfileId}));
 ipcMain.handle('dexpad:switch-profile',(_,id)=>switchProfile(id));

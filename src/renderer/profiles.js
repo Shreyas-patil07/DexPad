@@ -101,6 +101,11 @@
     tabs.appendChild(add);
   }
 
+  window.DexProfiles = {
+    getActiveId: () => currentState?.activeProfileId || null,
+    getState: () => currentState
+  };
+
   window.dexpad.onStateUpdated(render);
   window.dexpad.getState().then(render).catch(err => console.error('[DexPad] Profile state failed:', err));
 })();
