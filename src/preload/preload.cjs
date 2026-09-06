@@ -9,7 +9,6 @@ contextBridge.exposeInMainWorld('dexpad', {
   setStartup: (enabled) => ipcRenderer.invoke('dexpad:set-startup', enabled),
   setWallpaperMode: (enabled) => ipcRenderer.invoke('dexpad:set-wallpaper-mode', enabled),
   setState: (state) => ipcRenderer.invoke('dexpad:set-state', state),
-  saveCards: (cards) => ipcRenderer.invoke('dexpad:save-cards', cards),
   saveWorkspace: (workspace) => ipcRenderer.invoke('dexpad:save-workspace', workspace),
   saveWorkspaceSync: (workspace) => ipcRenderer.sendSync('dexpad:save-workspace-sync', workspace),
   openWorkspace: () => ipcRenderer.invoke('dexpad:open-workspace'),

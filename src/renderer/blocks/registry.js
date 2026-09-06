@@ -77,7 +77,17 @@
 
   function renderMarkdown(raw) {
     if (!raw || typeof raw !== 'string') return '';
-    const lines = raw.split(/\r?\n/);
+
+    // Pre-pass: replace multi-line (and single-line) fenced code blocks before
+    // splitting into lines, since line-by-line processing can't span multiple lines.
+    // note: the 's' (dotAll) flag lets . match newlines inside the fence.
+    const withFences = raw.replace(/```([^`]*?)```/gs, (_match, inner) => {
+      const lang = inner.match(/^(\S+)\n/)?.[1] || '';
+      const code = lang ? inner.slice(lang.length + 1) : inner;
+      return `<pre style="background:#151b24;padding:8px 10px;border-radius:6px;overflow-x:auto;margin:4px 0;"><code style="font-family:monospace;font-size:0.88em;">${escapeHtml(code.replace(/^\n/, ''))}</code></pre>`;
+    });
+
+    const lines = withFences.split(/\r?\n/);
     const htmlLines = lines.map(line => {
       // headings
       const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
@@ -95,10 +105,8 @@
         const itemText = line.replace(/^\s*[-*]\s+/, '');
         return `<li style="margin-left:14px;">${formatInlineMarkdown(itemText)}</li>`;
       }
-      // code block single-line
-      if (line.startsWith('```') && line.endsWith('```') && line.length > 6) {
-        return `<code style="background:#151b24;padding:2px 4px;border-radius:4px;font-family:monospace;">${escapeHtml(line.slice(3, -3))}</code>`;
-      }
+      // pre/code blocks injected by the pre-pass are passed through verbatim
+      if (line.startsWith('<pre ')) return line;
       // standard paragraph
       return line.trim() ? `<p style="margin:2px 0;">${formatInlineMarkdown(line)}</p>` : '<br/>';
     });

@@ -95,15 +95,27 @@ function saveWorkspace(rawCards, rawConnections, excludeSender = null, targetPro
   return operation;
 }
 
+// note: joins saveQueue so any in-flight async save (from the debounced
+// scheduleSave path) lands BEFORE this write, not after. The sync payload
+// holds the renderer's most-current state so it must be the tail of the queue.
+// The caller (ipcMain.on sendSync handler) sets event.returnValue inside the
+// .then(), which blocks the renderer's sendSync until the queue drains.
+// This is intentional — a brief hold on close beats silent data clobber.
 function saveWorkspaceSync(payload) {
   const profileIdToSave = payload?.profileId || activeProfileId;
-  const p = profiles.find(x => x.id === profileIdToSave);
-  if (!p) return;
-  const normalizedCards = normalizeCardGraph(Array.isArray(payload?.cards) ? payload.cards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
-  const normalizedConnections = normalizeConnections(payload?.connections, normalizedCards);
-  p.cards = normalizedCards;
-  p.connections = normalizedConnections;
-  persistProfiles();
+  // capture profileId at call time (same pattern as saveWorkspace) so a
+  // concurrent profile switch can't redirect this write mid-queue.
+  const operation = saveQueue.then(() => {
+    const p = profiles.find(x => x.id === profileIdToSave);
+    if (!p) return;
+    const normalizedCards = normalizeCardGraph(Array.isArray(payload?.cards) ? payload.cards.map((c,i)=>normalizeCard(c,i)).filter(Boolean) : []);
+    const normalizedConnections = normalizeConnections(payload?.connections, normalizedCards);
+    p.cards = normalizedCards;
+    p.connections = normalizedConnections;
+    persistProfiles();
+  });
+  saveQueue = operation.catch(err => console.error('[DexPad] saveWorkspaceSync error:', err));
+  return operation;
 }
 
 function applyStartup(enabled){ store.set('startup',enabled); app.setLoginItemSettings({openAtLogin:enabled,args:['--hidden']}); }
@@ -171,7 +183,7 @@ function doAttach(){
     attachTries=0;attachBusy=false;attachTimer=null;isWallpaperAttached=true;console.log('[DexPad] Wallpaper panel attached to desktop.');
   }catch(err){
     if(attachTries<ATTACH_MAX){attachTries++;console.warn(`[DexPad] Wallpaper attach attempt ${attachTries}/${ATTACH_MAX} failed: ${err.message}`);attachTimer=setTimeout(doAttach,ATTACH_DELAY);return;}
-    console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.',err.message);attachTries=0;attachBusy=false;attachTimer=null;isWallpaperAttached=false;store.set('wallpaperMode',false);destroyDesktopWindow();rebuildTray();showControlWindow();
+    console.error('[DexPad] Wallpaper attach gave up. Falling back to control panel.',err.message);attachTries=0;attachBusy=false;attachTimer=null;isWallpaperAttached=false;store.set('wallpaperMode',false);destroyDesktopWindow();rebuildTray();publishState();showControlWindow();
   }
 }
 function createDesktopWindow(){
@@ -192,9 +204,15 @@ function showSettingsWindow(){if(settingsWin&&!settingsWin.isDestroyed()){settin
 function quitApp(){quitting=true;if(explorerWatchTimer){clearInterval(explorerWatchTimer);explorerWatchTimer=null;}if(attachTimer){clearTimeout(attachTimer);attachTimer=null;}globalShortcut.unregisterAll();destroyDesktopWindow();workspaceWin?.destroy();settingsWin?.destroy();tray?.destroy();app.quit();}
 
 ipcMain.handle('dexpad:get-state',()=>currentState());
-ipcMain.handle('dexpad:save-cards',(event,rawCards)=>saveWorkspace(rawCards,getConnections(),event.sender,activeProfileId).then(r=>r.cards));
 ipcMain.handle('dexpad:save-workspace',(event,payload)=>saveWorkspace(payload?.cards,payload?.connections,event.sender,payload?.profileId));
-ipcMain.on('dexpad:save-workspace-sync',(event,payload)=>{try{saveWorkspaceSync(payload);event.returnValue=true;}catch(err){console.error('[DexPad] sync save failed:',err);event.returnValue=false;}});
+// note: sendSync blocks the renderer until event.returnValue is set; we set it
+// inside .then() so the renderer waits for the saveQueue to drain before the
+// window is allowed to close. This is the fix for the quit-save race (Bug #2).
+ipcMain.on('dexpad:save-workspace-sync',(event,payload)=>{
+  saveWorkspaceSync(payload)
+    .then(()=>{event.returnValue=true;})
+    .catch(err=>{console.error('[DexPad] sync save failed:',err);event.returnValue=false;});
+});
 ipcMain.handle('dexpad:get-profiles',()=>({profiles:profileSummary(),activeProfileId}));
 ipcMain.handle('dexpad:switch-profile',(_,id)=>switchProfile(id));
 ipcMain.handle('dexpad:create-profile',(_,name)=>createProfile(name));

@@ -98,31 +98,35 @@
     });
   }, { once: true });
 
-  // Every exposed IPC function gets a timing/error trace without changing its API.
+  // note: these IPC calls return full card/note payloads — log timing only,
+  // not the result value, to prevent private note content ending up in exported
+  // debug logs that users share for support.
+  const REDACT_RESULT = new Set(['getState', 'saveWorkspace', 'saveCards']);
+
   function wrapDexpad() {
     if (!window.dexpad || window.dexpad.__dexDebugWrapped) return;
     for (const [name, fn] of Object.entries(window.dexpad)) {
       if (typeof fn !== 'function' || name === 'onStateUpdated') continue;
       window.dexpad[name] = (...args) => {
         const t0 = performance.now();
-        write('info', `ipc.${name}.start`, args);
+        write('info', `ipc.${name}.start`, REDACT_RESULT.has(name) ? '<redacted>' : args);
         let result;
         try {
           result = fn(...args);
         } catch (err) {
-          write('error', `ipc.${name}.throw`, { args, error: err });
+          write('error', `ipc.${name}.throw`, { args: REDACT_RESULT.has(name) ? '<redacted>' : args, error: err });
           throw err;
         }
         if (result && typeof result.then === 'function') {
           return result.then(value => {
-            write('info', `ipc.${name}.ok`, { ms: Math.round(performance.now() - t0), result: value });
+            write('info', `ipc.${name}.ok`, { ms: Math.round(performance.now() - t0), result: REDACT_RESULT.has(name) ? '<redacted>' : value });
             return value;
           }, err => {
             write('error', `ipc.${name}.reject`, { ms: Math.round(performance.now() - t0), error: err });
             throw err;
           });
         }
-        write('info', `ipc.${name}.return`, { ms: Math.round(performance.now() - t0), result });
+        write('info', `ipc.${name}.return`, { ms: Math.round(performance.now() - t0), result: REDACT_RESULT.has(name) ? '<redacted>' : result });
         return result;
       };
     }

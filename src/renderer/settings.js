@@ -51,4 +51,26 @@ function setStatus(text) {
   if (el) el.textContent = text;
 }
 
+// note: wallpaper attach can fail async (up to ~6 retries over ~6s after Save).
+// When main gives up and falls back to control mode it calls publishState(),
+// which fires this listener so the checkbox reflects the real final state.
+let unsubStateUpdated = null;
+function subscribeStateUpdated() {
+  if (typeof window.dexpad?.onStateUpdated !== 'function') return;
+  if (unsubStateUpdated) unsubStateUpdated();
+  unsubStateUpdated = window.dexpad.onStateUpdated((state) => {
+    if (!state || typeof state.wallpaperMode !== 'boolean') return;
+    const chk = id('chk-wallpaper');
+    if (chk) chk.checked = state.wallpaperMode;
+    // only update status if we're still in the "Saved" window (< 3s)
+    const statusEl = id('status');
+    if (statusEl && statusEl.textContent === 'Saved ✓' && !state.wallpaperMode) {
+      setStatus('Wallpaper unavailable — running in control mode');
+    }
+  });
+}
+window.addEventListener('unload', () => { if (unsubStateUpdated) unsubStateUpdated(); });
+
 load();
+subscribeStateUpdated();
+
