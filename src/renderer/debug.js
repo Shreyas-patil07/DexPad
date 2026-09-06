@@ -5,6 +5,11 @@
   const entries = [];
   const MAX = 1000;
   let overlay = null;
+  const originalConsole = {
+    log: console.log.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console)
+  };
 
   function safe(value) {
     try {
@@ -26,10 +31,26 @@
     };
     entries.push(row);
     if (entries.length > MAX) entries.shift();
-    const method = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-    method.call(console, `[DexPad][Diag][+${row.t}ms] ${event}`, row.data);
+    const method = level === 'error' ? originalConsole.error : level === 'warn' ? originalConsole.warn : originalConsole.log;
+    method(`[DexPad][Diag][+${row.t}ms] ${event}`, row.data);
     refreshOverlay();
   }
+
+  // Capture console output produced by the application itself, including errors caught by init().
+  console.error = (...args) => {
+    originalConsole.error(...args);
+    write('error', 'console.error', args);
+  };
+  console.warn = (...args) => {
+    originalConsole.warn(...args);
+    write('warn', 'console.warn', args);
+  };
+  console.log = (...args) => {
+    originalConsole.log(...args);
+    // Do not duplicate our own diagnostic lines.
+    if (typeof args[0] === 'string' && args[0].startsWith('[DexPad][Diag]')) return;
+    write('info', 'console.log', args);
+  };
 
   window.DexDebug = {
     log(event, data) { write('info', event, data); },
@@ -193,6 +214,5 @@
   function showOverlay() { ensureOverlay().style.display = 'block'; refreshOverlay(); }
   function hideOverlay() { if (overlay) overlay.style.display = 'none'; }
 
-  // Log uncaught failures even when a later script replaces window.onerror.
   setTimeout(() => write('info', 'debug.ready', { href: location.href }), 0);
 })();
