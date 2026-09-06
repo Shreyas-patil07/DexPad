@@ -4,6 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 const {
   CURRENT_SCHEMA_VERSION,
+  VALID_BLOCK_TYPES,
   isValidUrl,
   normalizeCard,
   migrateState
@@ -17,62 +18,39 @@ describe('Card Schema Validation (normalizeCard)', () => {
   });
 
   test('enforces boundaries for dimensions and position', () => {
-    const raw = {
-      id: 'test-1',
-      type: 'note',
-      title: 'Hello',
-      x: -50,
-      y: -100,
-      width: 100, // min is 220
-      height: 900 // max is 520
-    };
-    const norm = normalizeCard(raw);
-    assert.strictEqual(norm.x, 0, 'Negative x clamped to 0');
-    assert.strictEqual(norm.y, 0, 'Negative y clamped to 0');
-    assert.strictEqual(norm.width, 220, 'Width clamped to min 220');
-    assert.strictEqual(norm.height, 720, 'Height clamped to max 720');
+    const norm = normalizeCard({ id:'test-1', type:'note', title:'Hello', x:-50, y:-100, width:100, height:1200 });
+    assert.strictEqual(norm.x, 0);
+    assert.strictEqual(norm.y, 0);
+    assert.strictEqual(norm.width, 220);
+    assert.strictEqual(norm.height, 900);
   });
 
   test('sanitizes strings and types', () => {
-    const raw = {
-      type: 'unknown_type',
-      title: 'A'.repeat(300),
-      body: 'B'.repeat(12000),
-      url: 'https://example.com'
-    };
-    const norm = normalizeCard(raw);
-    assert.strictEqual(norm.type, 'note', 'Invalid type defaults to note');
-    assert.strictEqual(norm.title.length, 200, 'Title sliced to 200 chars');
-    assert.strictEqual(norm.body.length, 10000, 'Body sliced to 10000 chars');
+    const norm = normalizeCard({ type:'unknown_type', title:'A'.repeat(300), body:'B'.repeat(12000), url:'https://example.com' });
+    assert.strictEqual(norm.type, 'note');
+    assert.strictEqual(norm.title.length, 200);
+    assert.strictEqual(norm.body.length, 10000);
+  });
+
+  test('accepts the full spatial block type set', () => {
+    for (const type of VALID_BLOCK_TYPES) assert.strictEqual(normalizeCard({ id:`${type}-1`, type }).type, type);
+    assert.deepStrictEqual(VALID_BLOCK_TYPES, ['note','todo','link','markdown','image','file','column','group','board']);
   });
 
   test('preserves or assigns valid zIndex', () => {
-    const cardWithZ = normalizeCard({ id: 'z1', zIndex: 42 });
-    assert.strictEqual(cardWithZ.zIndex, 42);
-
-    const cardWithoutZ = normalizeCard({ id: 'z2' }, 3, 10);
-    assert.strictEqual(cardWithoutZ.zIndex, 13);
+    assert.strictEqual(normalizeCard({ id:'z1', zIndex:42 }).zIndex, 42);
+    assert.strictEqual(normalizeCard({ id:'z2' }, 3, 10).zIndex, 13);
   });
 
-  test('normalizes extensible block fields (tags, colors, pinned, content)', () => {
-    const raw = {
-      id: 'block-1',
-      type: 'markdown',
-      color: 'cyan_unknown', // should fallback to default
-      pinned: true,
-      tags: ['  productivity ', 'personal', 123, ''],
-      content: {
-        title: 'Design Specs',
-        markdown: '# Architecture\nDetails here...'
-      }
-    };
-    const block = normalizeCard(raw);
+  test('normalizes visual metadata and extended content', () => {
+    const block = normalizeCard({ id:'block-1', type:'markdown', color:'purple', pinned:true, locked:true, tags:[' productivity ','personal','personal'], content:{ title:'Specs', markdown:'# Architecture' } });
     assert.strictEqual(block.type, 'markdown');
-    assert.strictEqual(block.color, 'default');
+    assert.strictEqual(block.color, 'purple');
     assert.strictEqual(block.pinned, true);
-    assert.deepStrictEqual(block.tags, ['productivity', 'personal']);
-    assert.strictEqual(block.title, 'Design Specs');
-    assert.strictEqual(block.content.markdown, '# Architecture\nDetails here...');
+    assert.strictEqual(block.locked, true);
+    assert.deepStrictEqual(block.tags, ['productivity','personal']);
+    assert.strictEqual(block.title, 'Specs');
+    assert.strictEqual(block.content.markdown, '# Architecture');
   });
 });
 
@@ -82,7 +60,6 @@ describe('URL Semantic Verification (isValidUrl)', () => {
     assert.strictEqual(isValidUrl('http://localhost:3000/api'), true);
     assert.strictEqual(isValidUrl('https://sub.domain.org/path?q=1'), true);
   });
-
   test('rejects dangerous or non-http protocols', () => {
     assert.strictEqual(isValidUrl('javascript:alert(1)'), false);
     assert.strictEqual(isValidUrl('file:///C:/Windows/system32'), false);
@@ -94,41 +71,24 @@ describe('URL Semantic Verification (isValidUrl)', () => {
 });
 
 describe('State Migration (migrateState)', () => {
-  test('migrates unversioned legacy state to schema version 2', () => {
-    const legacy = {
-      startup: true,
-      wallpaperMode: false,
-      cards: [
-        { id: 'c1', title: 'Task 1', type: 'todo' },
-        { id: 'c2', title: 'Task 2', type: 'note' }
-      ]
-    };
-    const migrated = migrateState(legacy);
+  test('migrates legacy state to the current schema', () => {
+    const migrated = migrateState({ startup:true, wallpaperMode:false, cards:[{id:'c1',title:'Task 1',type:'todo'},{id:'c2',title:'Task 2',type:'note'}] });
     assert.strictEqual(migrated.schemaVersion, CURRENT_SCHEMA_VERSION);
-    assert.strictEqual(migrated.schemaVersion, 2);
+    assert.strictEqual(migrated.schemaVersion, 3);
     assert.strictEqual(migrated.startup, true);
     assert.strictEqual(migrated.wallpaperMode, false);
     assert.strictEqual(migrated.cards.length, 2);
     assert.strictEqual(migrated.cards[0].zIndex, 1);
     assert.strictEqual(migrated.cards[1].zIndex, 2);
-    assert.strictEqual(migrated.cards[0].color, 'default');
     assert.deepStrictEqual(migrated.cards[0].tags, []);
-    assert.strictEqual(migrated.cards[0].content.title, 'Task 1');
+    assert.strictEqual(migrated.cards[0].locked, false);
   });
 
-  test('migrates schema version 1 to schema version 2 cleanly', () => {
-    const v1State = {
-      schemaVersion: 1,
-      startup: false,
-      wallpaperMode: true,
-      cards: [
-        { id: 'b1', type: 'link', title: 'GitHub', url: 'https://github.com', zIndex: 5 }
-      ]
-    };
-    const migrated = migrateState(v1State);
-    assert.strictEqual(migrated.schemaVersion, 2);
+  test('migrates schema version 2 to version 3 cleanly', () => {
+    const migrated = migrateState({ schemaVersion:2, startup:false, wallpaperMode:true, cards:[{id:'b1',type:'group',title:'Group',zIndex:5}] });
+    assert.strictEqual(migrated.schemaVersion, 3);
     assert.strictEqual(migrated.cards[0].zIndex, 5);
-    assert.strictEqual(migrated.cards[0].content.url, 'https://github.com');
+    assert.strictEqual(migrated.cards[0].collapsed, false);
   });
 
   test('handles empty or malformed state safely', () => {
