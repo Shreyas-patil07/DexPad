@@ -59,8 +59,32 @@ const SW_SHOWNOACTIVATE = 4;
 const SMTO_NORMAL = 0;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// note: win.getNativeWindowHandle() returns a Node Buffer holding the 64-bit HWND.
+// Koffi pointer arguments (HWND) require either an external pointer or an integer address (BigInt).
+// Passing the Buffer object directly causes Koffi to treat the Buffer object's heap address
+// as the HWND pointer, corrupting the handle and causing Win32 calls (SetParent, GetParent) to fail.
+function hwndToBigInt(handle) {
+  if (handle == null) return 0n;
+  if (typeof handle === 'bigint') return handle;
+  if (typeof handle === 'number') return BigInt(handle);
+  if (Buffer.isBuffer(handle)) {
+    return handle.length >= 8 ? handle.readBigUInt64LE(0) : BigInt(handle.readUInt32LE(0));
+  }
+  try {
+    return BigInt(koffi.address(handle));
+  } catch (_) {
+    return 0n;
+  }
+}
+
 function isNull(handle) {
-  return handle == null;
+  return hwndToBigInt(handle) === 0n;
+}
+
+function sameHwnd(a, b) {
+  const bigA = hwndToBigInt(a);
+  const bigB = hwndToBigInt(b);
+  return bigA !== 0n && bigA === bigB;
 }
 
 function electronHwnd(win) {
@@ -68,7 +92,11 @@ function electronHwnd(win) {
   if (!handle || handle.length === 0) {
     throw new Error('Electron returned an empty native window handle.');
   }
-  return handle;
+  const val = hwndToBigInt(handle);
+  if (val === 0n) {
+    throw new Error('Electron returned an invalid native window handle.');
+  }
+  return val;
 }
 
 // ─── WorkerW discovery ────────────────────────────────────────────────────────
