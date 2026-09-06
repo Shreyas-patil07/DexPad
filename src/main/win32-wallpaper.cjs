@@ -16,17 +16,14 @@ const FindWindowExW = user32.func('__stdcall', 'FindWindowExW', HWND, [HWND, HWN
 const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', [HWND, 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
 const SetParent = user32.func('__stdcall', 'SetParent', HWND, [HWND, HWND]);
 const GetParent = user32.func('__stdcall', 'GetParent', HWND, [HWND]);
-const IsWindow = user32.func('__stdcall', 'IsWindow', 'int32', [HWND]);
+const IsWindow = user32.func('__stdcall', 'IsWindow', HWND, []);
 const GetClassNameW = user32.func('__stdcall', 'GetClassNameW', 'int32', [HWND, 'void *', 'int32']);
 const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', [HWND, 'int32', 'intptr_t']);
 const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_t', [HWND, 'int32']);
 const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [HWND, HWND, 'int32', 'int32', 'int32', 'int32', 'uint32']);
 const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', [HWND, 'void *']);
-const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', [HWND, 'int32']);
+const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['int32']);
 const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAttributes', 'int32', [HWND, 'uint32', 'uint8', 'uint32']);
-const OpenDesktopA = user32.func('__stdcall', 'OpenDesktopA', HDESK, ['str', 'uint32', 'bool', 'uint32']);
-const SetThreadDesktop = user32.func('__stdcall', 'SetThreadDesktop', 'bool', [HDESK]);
-const CloseDesktop = user32.func('__stdcall', 'CloseDesktop', 'bool', [HDESK]);
 const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', [HWND, 'intptr_t']);
 const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
 
@@ -51,7 +48,8 @@ const SWP_NOSENDCHANGING = 0x0400;
 const SWP_SHOWWINDOW = 0x0040;
 const SWP_FRAMECHANGED = 0x0020;
 const SW_SHOWNOACTIVATE = 4;
-const SMTO_NORMAL = 0;
+const SW_HIDE = 0;
+const SMTO_ABORTIFHUNG = 0x0002;
 
 function hwndToBigInt(handle) {
   if (handle == null) return 0n;
@@ -73,51 +71,69 @@ function className(hwnd) {
   const length = GetClassNameW(hwnd, buffer, 64);
   return length > 0 ? buffer.toString('utf16le', 0, length * 2) : '';
 }
+function findChildByClass(parent, childAfter, classNameValue) {
+  return FindWindowExW(parent, childAfter, classNameValue, null);
+}
 
 function spawnWorkerW(progman) {
-  for (const [wp, lp] of [[0x0D, 0x01], [0x0D, 0x00], [0x00, 0x00]]) {
-    try { SendMessageTimeoutW(progman, 0x052C, wp, lp, SMTO_NORMAL, 1500, Buffer.alloc(8)); } catch (_) {}
+  // 0x052C is the documented Explorer trick used by desktop-widget/wallpaper
+  // implementations to ask Progman to create the WorkerW desktop layer.
+  const probes = [[0x0D, 0x01], [0x0D, 0x00], [0x00, 0x00]];
+  for (const [wParam, lParam] of probes) {
+    try {
+      SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_ABORTIFHUNG, 2000, Buffer.alloc(8));
+    } catch (_) {}
   }
 }
-function ensureDefaultDesktop() {
-  let hDesk = null;
-  try {
-    hDesk = OpenDesktopA('Default', 0, false, 0x10000000);
-    if (!isNull(hDesk)) SetThreadDesktop(hDesk);
-  } catch (_) {} finally {
-    if (hDesk && !isNull(hDesk)) { try { CloseDesktop(hDesk); } catch (_) {} }
-  }
-}
+
 function findWorkerW() {
-  let progman = FindWindowW('Progman', null);
-  if (isNull(progman)) { ensureDefaultDesktop(); progman = FindWindowW('Progman', null); }
+  const progman = FindWindowW('Progman', null);
   if (isNull(progman)) throw new Error('Progman not found — is Explorer running?');
+
   spawnWorkerW(progman);
 
-  let child = null;
-  while (true) {
-    const next = FindWindowExW(progman, child, 'WorkerW', null);
-    if (isNull(next)) break;
-    if (isNull(FindWindowExW(next, null, 'SHELLDLL_DefView', null))) return next;
-    child = next;
-  }
-
-  let shellParent = null;
+  // Canonical discovery:
+  // 1. Find the top-level window that owns SHELLDLL_DefView (the desktop view).
+  // 2. Find the WorkerW immediately after that shell window.
+  // Modern Windows commonly keeps these as sibling top-level windows rather
+  // than as a WorkerW directly parented to Progman.
+  let shellViewOwner = null;
   const cb = koffi.register((hwnd) => {
-    if (!isNull(FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null))) { shellParent = hwnd; return 0; }
+    const shellView = findChildByClass(hwnd, null, 'SHELLDLL_DefView');
+    if (!isNull(shellView)) {
+      shellViewOwner = hwnd;
+      return 0;
+    }
     return 1;
   }, koffi.pointer(EnumWindowsCallback));
-  try { EnumWindows(cb, 0); } finally { koffi.unregister(cb); }
-  if (isNull(shellParent)) throw new Error('SHELLDLL_DefView not found.');
 
-  const sibling = FindWindowExW(null, shellParent, 'WorkerW', null);
-  if (!isNull(sibling)) return sibling;
+  try { EnumWindows(cb, 0); } finally { koffi.unregister(cb); }
+  if (isNull(shellViewOwner)) throw new Error('SHELLDLL_DefView not found.');
+
+  let workerW = findChildByClass(null, shellViewOwner, 'WorkerW');
+  if (!isNull(workerW)) return workerW;
+
+  // Some Explorer builds produce an extra WorkerW after the shell owner only
+  // after the Progman message has settled. Re-enumerate top-level windows as a
+  // narrow fallback and select the first visible WorkerW without SHELLDLL_DefView.
+  const candidates = [];
+  const cb2 = koffi.register((hwnd) => {
+    if (className(hwnd) !== 'WorkerW') return 1;
+    if (!isNull(findChildByClass(hwnd, null, 'SHELLDLL_DefView'))) return 1;
+    candidates.push(hwnd);
+    return 1;
+  }, koffi.pointer(EnumWindowsCallback));
+  try { EnumWindows(cb2, 0); } finally { koffi.unregister(cb2); }
+
+  workerW = candidates[0] || null;
+  if (!isNull(workerW)) return workerW;
+
   throw new Error('No suitable WorkerW found for desktop embedding.');
 }
 
 function prepareWindow(hwnd) {
   const ex = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW | WS_EX_LAYERED) & ~WS_EX_APPWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT);
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex | WS_EX_TOOLWINDOW | WS_EX_LAYERED) & ~WS_EX_APPWINDOW);
   SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
 }
 
@@ -164,7 +180,7 @@ function detachFromDesktop(browserWindow) {
     SetParent(hwnd, null);
   }
   const ex = Number(GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
-  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW);
+  SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW);
 }
 
 function setClickThrough(browserWindow, enabled) {
