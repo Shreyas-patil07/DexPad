@@ -59,10 +59,6 @@ const SW_SHOWNOACTIVATE = 4;
 const SMTO_NORMAL = 0;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-// note: win.getNativeWindowHandle() returns a Node Buffer holding the 64-bit HWND.
-// Koffi pointer arguments (HWND) require either an external pointer or an integer address (BigInt).
-// Passing the Buffer object directly causes Koffi to treat the Buffer object's heap address
-// as the HWND pointer, corrupting the handle and causing Win32 calls (SetParent, GetParent) to fail.
 function hwndToBigInt(handle) {
   if (handle == null) return 0n;
   if (typeof handle === 'bigint') return handle;
@@ -186,6 +182,19 @@ function attachToDesktop(browserWindow, bounds) {
   const workerW = findWorkerW();
   if (isNull(workerW)) throw new Error('WorkerW handle is invalid.');
 
+  // Capture the Electron window's current physical size BEFORE reparenting.
+  // Electron's setBounds() uses DIP; the native HWND already has the correctly
+  // scaled physical size. We should not pass DIP width/height to SetWindowPos.
+  const initialRect = Buffer.alloc(16);
+  if (!GetWindowRect(hwnd, initialRect)) {
+    throw new Error('GetWindowRect(Electron window) failed.');
+  }
+  const currentWidth = initialRect.readInt32LE(8) - initialRect.readInt32LE(0);
+  const currentHeight = initialRect.readInt32LE(12) - initialRect.readInt32LE(4);
+  if (currentWidth <= 0 || currentHeight <= 0) {
+    throw new Error('Electron window has invalid native dimensions.');
+  }
+
   prepareWindow(hwnd);
 
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
@@ -196,8 +205,7 @@ function attachToDesktop(browserWindow, bounds) {
   // SetParent returns the PREVIOUS parent, so a NULL result is normal here.
   SetParent(hwnd, workerW);
 
-  // Verify that the window now has a live parent. Comparing opaque Koffi
-  // handle objects with === is not reliable across separate API calls.
+  // Verify that the window now has a live parent.
   const actualParent = GetParent(hwnd);
   if (isNull(actualParent) || IsWindow(actualParent) === 0) {
     throw new Error('SetParent failed — window is not attached to WorkerW.');
@@ -211,13 +219,15 @@ function attachToDesktop(browserWindow, bounds) {
   const wLeft = rect.readInt32LE(0);
   const wTop = rect.readInt32LE(4);
 
+  // bounds.x/y are already physical screen coordinates from Electron's
+  // screen.dipToScreenPoint(). Use the existing native physical dimensions.
   if (!SetWindowPos(
     hwnd,
     HWND_TOP,
     Math.round(bounds.x - wLeft),
     Math.round(bounds.y - wTop),
-    bounds.width,
-    bounds.height,
+    currentWidth,
+    currentHeight,
     SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED
   )) {
     throw new Error('SetWindowPos failed while positioning wallpaper panel.');
