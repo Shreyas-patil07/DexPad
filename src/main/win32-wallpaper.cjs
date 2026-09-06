@@ -19,9 +19,7 @@ function debugError(label, err) {
   console.error(`[DexPad][Wallpaper][ERROR] ${label}`, err?.stack || err?.message || err);
 }
 
-// Win32 handles are pointer-sized integers. Electron exposes its HWND as a
-// Buffer containing that value, while Koffi 2.x callback pointers are BigInts.
-// Use intptr_t consistently at the FFI boundary so all HWNDs have the same ABI.
+// Keep every HWND/context at the FFI boundary as a pointer-sized integer.
 const HWND = 'intptr_t';
 const DPI_AWARENESS_CONTEXT = 'intptr_t';
 
@@ -44,10 +42,13 @@ const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAtt
 const GetWindowDpiAwarenessContext = user32.func('__stdcall', 'GetWindowDpiAwarenessContext', DPI_AWARENESS_CONTEXT, [HWND]);
 const GetThreadDpiAwarenessContext = user32.func('__stdcall', 'GetThreadDpiAwarenessContext', DPI_AWARENESS_CONTEXT, []);
 const SetThreadDpiAwarenessContext = user32.func('__stdcall', 'SetThreadDpiAwarenessContext', DPI_AWARENESS_CONTEXT, [DPI_AWARENESS_CONTEXT]);
+const GetAwarenessFromDpiAwarenessContext = user32.func('__stdcall', 'GetAwarenessFromDpiAwarenessContext', 'int32', [DPI_AWARENESS_CONTEXT]);
+const GetDpiForWindow = user32.func('__stdcall', 'GetDpiForWindow', 'uint32', [HWND]);
+const GetWindowThreadProcessId = user32.func('__stdcall', 'GetWindowThreadProcessId', 'uint32', [HWND, 'void *']);
+const GetCurrentProcessId = kernel32.func('__stdcall', 'GetCurrentProcessId', 'uint32', []);
+const GetCurrentThreadId = kernel32.func('__stdcall', 'GetCurrentThreadId', 'uint32', []);
 const GetLastError = kernel32.func('__stdcall', 'GetLastError', 'uint32', []);
 const SetLastError = kernel32.func('__stdcall', 'SetLastError', 'void', ['uint32']);
-const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', [HWND, 'intptr_t']);
-const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -131,21 +132,66 @@ function safeWindowStyle(hwnd, index) {
   }
 }
 
+function inspectDpi(label, hwnd) {
+  if (isNull(hwnd)) {
+    debug(`${label}: DPI`, { hwnd: 'NULL' });
+    return;
+  }
+
+  try {
+    const context = GetWindowDpiAwarenessContext(hwnd);
+    const awareness = GetAwarenessFromDpiAwarenessContext(context);
+    const dpi = GetDpiForWindow(hwnd);
+    let pid = 0;
+    const pidBuffer = Buffer.alloc(4);
+    const tid = GetWindowThreadProcessId(hwnd, pidBuffer);
+    pid = pidBuffer.readUInt32LE(0);
+
+    debug(`${label}: DPI`, {
+      hwnd: hwndLabel(hwnd),
+      dpi,
+      dpiAwarenessContext: hwndLabel(context),
+      dpiAwareness: awareness,
+      threadId: tid,
+      processId: pid
+    });
+  } catch (err) {
+    debugError(`${label}: DPI inspection failed`, err);
+  }
+}
+
+function inspectProcessContext(label) {
+  try {
+    const context = GetThreadDpiAwarenessContext();
+    const awareness = GetAwarenessFromDpiAwarenessContext(context);
+    debug(`${label}: thread DPI`, {
+      processId: Number(GetCurrentProcessId()),
+      threadId: Number(GetCurrentThreadId()),
+      context: hwndLabel(context),
+      awareness
+    });
+  } catch (err) {
+    debugError(`${label}: thread DPI inspection failed`, err);
+  }
+}
+
 function inspectWindow(label, hwnd) {
   if (isNull(hwnd)) {
     debug(label, { hwnd: 'NULL' });
     return;
   }
   const parent = GetParent(hwnd);
+  const parentClass = isNull(parent) ? '' : className(parent);
   debug(label, {
     hwnd: hwndLabel(hwnd),
     class: className(hwnd),
     parent: hwndLabel(parent),
-    parentClass: isNull(parent) ? '' : className(parent),
+    parentClass,
     isWindow: IsWindow(hwnd),
     style: `0x${safeWindowStyle(hwnd, GWL_STYLE).toString(16).toUpperCase()}`,
     exStyle: `0x${safeWindowStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`
   });
+  inspectDpi(label, hwnd);
 }
 
 function spawnWorkerW(progman) {
@@ -153,7 +199,16 @@ function spawnWorkerW(progman) {
   for (const [wParam, lParam] of probes) {
     try {
       const out = Buffer.alloc(8);
-      SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_ABORTIFHUNG, 2000, out);
+      SetLastError(0);
+      const result = SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_ABORTIFHUNG, 2000, out);
+      const error = win32Error();
+      debug('spawnWorkerW: probe', {
+        wParam: `0x${wParam.toString(16)}`,
+        lParam: `0x${lParam.toString(16)}`,
+        result,
+        lastErrorImmediatelyAfterCall: error,
+        out: out.toString('hex')
+      });
     } catch (err) {
       debugError('spawnWorkerW', err);
     }
@@ -169,7 +224,7 @@ function findShellViewOwner() {
       return 0;
     }
     return 1;
-  }, koffi.pointer(EnumWindowsCallback));
+  }, koffi.pointer(koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', [HWND, 'intptr_t'])));
   try {
     EnumWindows(cb, 0n);
   } finally {
@@ -178,7 +233,12 @@ function findShellViewOwner() {
   return owner;
 }
 
+const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback2', 'int32', [HWND, 'intptr_t']);
+const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
+
 function findWorkerW() {
+  debug('findWorkerW: BEGIN');
+
   const progman = FindWindowW('Progman', null);
   if (isNull(progman)) throw new Error('Progman not found — is Explorer running?');
 
@@ -187,8 +247,10 @@ function findWorkerW() {
 
   const shellViewOwner = findShellViewOwner();
   if (isNull(shellViewOwner)) throw new Error('SHELLDLL_DefView not found.');
+
   inspectWindow('SHELLDLL_DefView owner', shellViewOwner);
-  inspectWindow('SHELLDLL_DefView', findChildByClass(shellViewOwner, 0n, 'SHELLDLL_DefView'));
+  const shellView = findChildByClass(shellViewOwner, 0n, 'SHELLDLL_DefView');
+  inspectWindow('SHELLDLL_DefView', shellView);
 
   const candidates = [];
   const cb = koffi.register((hwnd) => {
@@ -209,6 +271,14 @@ function findWorkerW() {
     koffi.unregister(cb);
   }
 
+  debug('findWorkerW: candidates', candidates.map((candidate) => ({
+    hwnd: hwndLabel(candidate.hwnd),
+    parent: hwndLabel(candidate.parent),
+    childShell: hwndLabel(candidate.childShell),
+    style: `0x${candidate.style.toString(16).toUpperCase()}`,
+    exStyle: `0x${candidate.exStyle.toString(16).toUpperCase()}`
+  })));
+
   const suitable = candidates.find((candidate) => isNull(candidate.childShell));
   if (!suitable) throw new Error(`No suitable WorkerW found. candidates=${candidates.length}`);
 
@@ -221,6 +291,7 @@ function prepareWindow(hwnd) {
   const before = safeWindowStyle(hwnd, GWL_EXSTYLE);
   const next = (before | WS_EX_TOOLWINDOW | WS_EX_LAYERED) & ~WS_EX_APPWINDOW;
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
+
   if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
     throw new Error(`SetLayeredWindowAttributes failed. win32Error=${win32Error()}`);
   }
@@ -242,68 +313,88 @@ function sameHwnd(left, right) {
   return hwndToBigInt(left) === hwndToBigInt(right);
 }
 
-function attachWithDpiContext(hwnd, workerW) {
-  const workerContext = GetWindowDpiAwarenessContext(workerW);
-  const currentContext = GetThreadDpiAwarenessContext();
+function trySetParent(hwnd, workerW) {
+  inspectProcessContext('BEFORE SetParent');
+  inspectDpi('Electron BEFORE SetParent', hwnd);
+  inspectDpi('WorkerW BEFORE SetParent', workerW);
 
-  debug('attachWithDpiContext: contexts', {
-    workerW: hwndLabel(workerW),
-    workerContext: hwndLabel(workerContext),
-    currentThreadContext: hwndLabel(currentContext)
+  const beforeParent = GetParent(hwnd);
+  const beforeStyle = safeWindowStyle(hwnd, GWL_STYLE);
+  const beforeExStyle = safeWindowStyle(hwnd, GWL_EXSTYLE);
+
+  // SetLastError must happen immediately before the API call, and GetLastError
+  // must happen immediately after it. Any GetParent/class lookup can overwrite it.
+  SetLastError(0);
+  let previousParent;
+  try {
+    previousParent = SetParent(hwnd, workerW);
+  } catch (err) {
+    debugError('SetParent native invocation threw', err);
+    return {
+      threw: true,
+      error: err,
+      beforeParent,
+      previousParent: null,
+      actualParent: GetParent(hwnd)
+    };
+  }
+  const immediateLastError = win32Error();
+
+  // Only now is it safe to perform additional inspection calls.
+  const actualParent = GetParent(hwnd);
+  const actualParentClass = isNull(actualParent) ? '' : className(actualParent);
+  const afterStyle = safeWindowStyle(hwnd, GWL_STYLE);
+  const afterExStyle = safeWindowStyle(hwnd, GWL_EXSTYLE);
+
+  debug('SET_PARENT_EXACT_RESULT', {
+    child: hwndLabel(hwnd),
+    requestedParent: hwndLabel(workerW),
+    previousParent: hwndLabel(previousParent),
+    actualParent: hwndLabel(actualParent),
+    actualParentClass,
+    immediateLastError,
+    previousParentWasNull: isNull(previousParent),
+    actualParentMatchesRequested: sameHwnd(actualParent, workerW),
+    childWasValidBefore: IsWindow(hwnd) !== 0,
+    parentWasValidBefore: IsWindow(workerW) !== 0,
+    childStyleBefore: `0x${beforeStyle.toString(16).toUpperCase()}`,
+    childStyleAfter: `0x${afterStyle.toString(16).toUpperCase()}`,
+    childExStyleBefore: `0x${beforeExStyle.toString(16).toUpperCase()}`,
+    childExStyleAfter: `0x${afterExStyle.toString(16).toUpperCase()}`
   });
 
-  let switched = false;
-  if (!isNull(workerContext) && !sameHwnd(workerContext, currentContext)) {
-    SetLastError(0);
-    const previousContext = SetThreadDpiAwarenessContext(workerContext);
-    const switchError = win32Error();
-    debug('attachWithDpiContext: switched thread context', {
-      previous: hwndLabel(previousContext),
-      target: hwndLabel(workerContext),
-      lastError: switchError
-    });
-    switched = !isNull(previousContext);
-  }
-
-  try {
-    SetLastError(0);
-    const previousParent = SetParent(hwnd, workerW);
-    const setParentError = win32Error();
-    const actualParent = GetParent(hwnd);
-
-    debug('attachWithDpiContext: SetParent', {
-      previousParent: hwndLabel(previousParent),
-      requestedParent: hwndLabel(workerW),
-      actualParent: hwndLabel(actualParent),
-      actualParentClass: isNull(actualParent) ? '' : className(actualParent),
-      win32Error: setParentError
-    });
-
-    return {
-      previousParent,
-      actualParent,
-      setParentError
-    };
-  } finally {
-    if (switched) {
-      SetThreadDpiAwarenessContext(currentContext);
-    }
-  }
+  return {
+    threw: false,
+    previousParent,
+    actualParent,
+    actualParentClass,
+    immediateLastError,
+    beforeParent,
+    beforeStyle,
+    beforeExStyle,
+    afterStyle,
+    afterExStyle
+  };
 }
 
 function attachToDesktop(browserWindow, bounds) {
+  debug('============================================================');
   debug('attachToDesktop: BEGIN', { bounds });
+
   if (!browserWindow || browserWindow.isDestroyed()) {
     throw new Error('Cannot attach a destroyed BrowserWindow.');
   }
 
   const hwnd = electronHwnd(browserWindow);
+  inspectWindow('Electron BEFORE attach', hwnd);
+
   const workerW = findWorkerW();
   if (isNull(workerW) || IsWindow(workerW) === 0) {
     throw new Error(`Selected WorkerW is invalid: ${hwndLabel(workerW)}`);
   }
 
   const initialRect = Buffer.alloc(16);
+  SetLastError(0);
   if (!GetWindowRect(hwnd, initialRect)) {
     throw new Error(`GetWindowRect(Electron) failed. win32Error=${win32Error()}`);
   }
@@ -314,29 +405,38 @@ function attachToDesktop(browserWindow, bounds) {
   const bottom = initialRect.readInt32LE(12);
   const width = right - left;
   const height = bottom - top;
-  if (width <= 0 || height <= 0) throw new Error('Electron window has invalid native dimensions.');
+
+  debug('Electron initial RECT', { left, top, right, bottom, width, height });
+  inspectProcessContext('BEFORE prepareWindow');
+
+  if (width <= 0 || height <= 0) {
+    throw new Error('Electron window has invalid native dimensions.');
+  }
 
   prepareWindow(hwnd);
   setChildStyle(hwnd);
 
-  debug('attachToDesktop: BEFORE SetParent', {
-    hwnd: hwndLabel(hwnd),
-    workerW: hwndLabel(workerW),
-    hwndClass: className(hwnd),
-    workerClass: className(workerW),
-    hwndParent: hwndLabel(GetParent(hwnd)),
-  });
+  const setParentResult = trySetParent(hwnd, workerW);
 
-  const { actualParent, setParentError } = attachWithDpiContext(hwnd, workerW);
+  if (setParentResult.threw) {
+    throw setParentResult.error;
+  }
 
-  if (!sameHwnd(actualParent, workerW)) {
+  if (!sameHwnd(setParentResult.actualParent, workerW)) {
+    debug('ATTACH VERIFICATION FAILED', {
+      requestedParent: hwndLabel(workerW),
+      actualParent: hwndLabel(setParentResult.actualParent),
+      actualParentClass: setParentResult.actualParentClass,
+      immediateSetParentLastError: setParentResult.immediateLastError
+    });
     throw new Error(
-      `SetParent failed — requested=${hwndLabel(workerW)} actual=${hwndLabel(actualParent)} ` +
-      `class=${isNull(actualParent) ? 'NULL' : className(actualParent)} win32Error=${setParentError}`
+      `SetParent failed — requested=${hwndLabel(workerW)} actual=${hwndLabel(setParentResult.actualParent)} ` +
+      `class=${setParentResult.actualParentClass || 'NULL'} immediateWin32Error=${setParentResult.immediateLastError}`
     );
   }
 
   const workerRect = Buffer.alloc(16);
+  SetLastError(0);
   if (!GetWindowRect(workerW, workerRect)) {
     throw new Error(`GetWindowRect(WorkerW) failed. win32Error=${win32Error()}`);
   }
@@ -345,27 +445,54 @@ function attachToDesktop(browserWindow, bounds) {
   const workerTop = workerRect.readInt32LE(4);
   const targetX = Math.round((bounds?.x || 0) - workerLeft);
   const targetY = Math.round((bounds?.y || 0) - workerTop);
+
   const posFlags = SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOOWNERZORDER;
-
-  if (!SetWindowPos(hwnd, HWND_TOP, targetX, targetY, width, height, posFlags)) {
-    throw new Error(`SetWindowPos failed while positioning wallpaper panel. win32Error=${win32Error()}`);
+  SetLastError(0);
+  const posResult = SetWindowPos(hwnd, HWND_TOP, targetX, targetY, width, height, posFlags);
+  const posError = win32Error();
+  debug('SetWindowPos exact result', {
+    result: posResult,
+    immediateLastError: posError,
+    targetX,
+    targetY,
+    width,
+    height
+  });
+  if (!posResult) {
+    throw new Error(`SetWindowPos failed while positioning wallpaper panel. win32Error=${posError}`);
   }
 
-  if (!SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)) {
-    throw new Error(`SetLayeredWindowAttributes(final) failed. win32Error=${win32Error()}`);
+  SetLastError(0);
+  const layeredResult = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+  const layeredError = win32Error();
+  debug('SetLayeredWindowAttributes exact result', {
+    result: layeredResult,
+    immediateLastError: layeredError
+  });
+  if (!layeredResult) {
+    throw new Error(`SetLayeredWindowAttributes(final) failed. win32Error=${layeredError}`);
   }
 
-  ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+  SetLastError(0);
+  const showResult = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+  const showError = win32Error();
+  debug('ShowWindow exact result', {
+    result: showResult,
+    immediateLastError: showError
+  });
 
   const finalParent = GetParent(hwnd);
+  inspectProcessContext('FINAL');
+  inspectWindow('Electron FINAL after attach', hwnd);
+
   if (!sameHwnd(finalParent, workerW)) {
     throw new Error(
       `Wallpaper parent changed unexpectedly — expected=${hwndLabel(workerW)} actual=${hwndLabel(finalParent)}`
     );
   }
 
-  inspectWindow('Electron FINAL after attach', hwnd);
   debug('attachToDesktop: SUCCESS');
+  debug('============================================================');
   return true;
 }
 
@@ -374,19 +501,34 @@ function detachFromDesktop(browserWindow) {
   if (!browserWindow || browserWindow.isDestroyed()) return;
 
   const hwnd = electronHwnd(browserWindow);
-  const style = safeWindowStyle(hwnd, GWL_STYLE);
+  inspectWindow('Electron BEFORE detach', hwnd);
 
+  const style = safeWindowStyle(hwnd, GWL_STYLE);
   if (style & WS_CHILD) {
     const nextStyle = (style & ~WS_CHILD) | WS_POPUP | WS_VISIBLE;
+    SetLastError(0);
     SetWindowLongPtrW(hwnd, GWL_STYLE, nextStyle);
-    SetParent(hwnd, 0n);
+    const styleError = win32Error();
+    debug('detach: restore style', { nextStyle: `0x${nextStyle.toString(16).toUpperCase()}`, immediateLastError: styleError });
+
+    SetLastError(0);
+    const previousParent = SetParent(hwnd, 0n);
+    const detachError = win32Error();
+    debug('detach: SetParent(NULL) exact result', {
+      previousParent: hwndLabel(previousParent),
+      immediateLastError: detachError,
+      actualParent: hwndLabel(GetParent(hwnd))
+    });
   }
 
   const exStyle = safeWindowStyle(hwnd, GWL_EXSTYLE);
   const nextExStyle = (exStyle & ~WS_EX_TOOLWINDOW & ~WS_EX_NOACTIVATE & ~WS_EX_TRANSPARENT) | WS_EX_APPWINDOW;
+  SetLastError(0);
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
-  SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  const exError = win32Error();
+  debug('detach: restore exStyle', { nextExStyle: `0x${nextExStyle.toString(16).toUpperCase()}`, immediateLastError: exError });
 
+  SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   inspectWindow('Electron AFTER detach', hwnd);
   debug('detachFromDesktop: END');
 }
@@ -399,7 +541,15 @@ function setClickThrough(browserWindow, enabled) {
     ? exStyle | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
     : (exStyle & ~WS_EX_TRANSPARENT & ~WS_EX_NOACTIVATE) | WS_EX_APPWINDOW;
 
+  SetLastError(0);
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
+  const styleError = win32Error();
+  debug('setClickThrough: SetWindowLongPtrW exact result', {
+    enabled,
+    immediateLastError: styleError,
+    actual: `0x${safeWindowStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`
+  });
+
   browserWindow.setIgnoreMouseEvents(enabled);
   SetWindowPos(hwnd, 0n, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   inspectWindow('Electron AFTER click-through', hwnd);
@@ -409,14 +559,17 @@ function setClickThrough(browserWindow, enabled) {
 function sendToBottom(browserWindow) {
   debug('sendToBottom: BEGIN');
   const hwnd = electronHwnd(browserWindow);
-  if (!SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING)) {
-    throw new Error(`SetWindowPos(bottom) failed. win32Error=${win32Error()}`);
-  }
+  SetLastError(0);
+  const result = SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+  const error = win32Error();
+  debug('sendToBottom: SetWindowPos exact result', { result, immediateLastError: error });
+  if (!result) throw new Error(`SetWindowPos(bottom) failed. win32Error=${error}`);
   debug('sendToBottom: END');
 }
 
 function isWindowAttached(browserWindow) {
   if (!browserWindow || browserWindow.isDestroyed()) return false;
+
   try {
     const hwnd = electronHwnd(browserWindow);
     const parent = GetParent(hwnd);
