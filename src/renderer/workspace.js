@@ -151,14 +151,9 @@ async function flushSave() {
   if (isSaving) { savePending = true; return; }
   isSaving = true;
   try {
-    const saved = await window.dexpad.saveWorkspace({ cards, connections });
-    if (saved && Array.isArray(saved.cards)) {
-      const ids = new Set(saved.cards.map(c => c.id));
-      cards = saved.cards;
-      connections = Array.isArray(saved.connections) ? saved.connections : connections.filter(c => ids.has(c.a) && ids.has(c.b));
-      selectedIds.clear();
-      reconcile();
-    }
+    await window.dexpad.saveWorkspace({ cards, connections });
+    // Do not replace local objects or rebuild the DOM after an ordinary save.
+    // Reconciliation here would steal input focus/caret while the user types.
     setSaveStatus('Saved');
   } catch (err) {
     console.error('[DexPad] Save failed:', err);
@@ -179,10 +174,13 @@ function setSaveStatus(status) {
 
 function validateImageSource(src) {
   if (typeof src !== 'string' || !src.trim()) return false;
-  return src.startsWith('data:image/') || (() => {
-    try { const u = new URL(src); return u.protocol === 'http:' || u.protocol === 'https:'; }
-    catch (_) { return false; }
-  })();
+  if (src.startsWith('data:image/')) return true;
+  try {
+    const url = new URL(src);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
 }
 
 function makeCard(type) {
@@ -394,6 +392,7 @@ function buildCard(card) {
       patch: patch => patchCard(card.id, patch),
       flush: flushSave,
       isValidUrl,
+      validateImageSource,
       openUrl,
       openBoard
     });
@@ -475,8 +474,6 @@ function reconcileCard(id) {
   if (!card || !el) { reconcile(); return; }
   positionCard(el, card);
   syncInputs(el, card);
-  el.dataset.pinned = String(!!card.pinned);
-  el.dataset.locked = String(!!card.locked);
   updateSelection();
   scheduleDrawConnections();
 }
@@ -681,11 +678,15 @@ function applyTemplate(name) {
 function showTemplates() {
   const existing = $('templates-menu');
   if (existing) { existing.remove(); return; }
+  const anchor = $('btn-templates');
+  if (!anchor) return;
   const menu = document.createElement('div'); menu.id = 'templates-menu'; menu.className = 'floating-menu';
+  menu.style.right = '0';
+  menu.style.top = '38px';
   const a = document.createElement('button'); a.textContent = 'Project board'; a.onclick = () => { applyTemplate('project'); menu.remove(); };
   const b = document.createElement('button'); b.textContent = 'Weekly planner'; b.onclick = () => { applyTemplate('weekly'); menu.remove(); };
   menu.append(a,b);
-  $('btn-templates')?.parentElement?.appendChild(menu);
+  anchor.parentElement?.appendChild(menu);
 }
 
 $('btn-add')?.addEventListener('click', () => { const m = $('add-menu'); if (m) m.hidden = !m.hidden; });
@@ -765,6 +766,7 @@ async function init() {
         if (!state || !Array.isArray(state.cards)) return;
         cards = state.cards;
         connections = Array.isArray(state.connections) ? state.connections : [];
+        selectedIds.clear();
         reconcile();
       });
     }
