@@ -50,6 +50,10 @@ const GetCurrentThreadId = kernel32.func('__stdcall', 'GetCurrentThreadId', 'uin
 const GetLastError = kernel32.func('__stdcall', 'GetLastError', 'uint32', []);
 const SetLastError = kernel32.func('__stdcall', 'SetLastError', 'void', ['uint32']);
 
+// Register the EnumWindows callback prototype once at module scope to prevent Koffi duplicate type registration errors across retries
+const EnumWindowsProc = koffi.proto('__stdcall', 'EnumWindowsProc', 'int32', [HWND, 'intptr_t']);
+const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsProc), 'intptr_t']);
+
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
 const WS_CHILD = 0x40000000;
@@ -224,7 +228,7 @@ function findShellViewOwner() {
       return 0;
     }
     return 1;
-  }, koffi.pointer(koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', [HWND, 'intptr_t'])));
+  }, koffi.pointer(EnumWindowsProc));
   try {
     EnumWindows(cb, 0n);
   } finally {
@@ -232,9 +236,6 @@ function findShellViewOwner() {
   }
   return owner;
 }
-
-const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback2', 'int32', [HWND, 'intptr_t']);
-const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
 
 function findWorkerW() {
   debug('findWorkerW: BEGIN');
@@ -263,7 +264,7 @@ function findWorkerW() {
       exStyle: safeWindowStyle(hwnd, GWL_EXSTYLE)
     });
     return 1;
-  }, koffi.pointer(EnumWindowsCallback));
+  }, koffi.pointer(EnumWindowsProc));
 
   try {
     EnumWindows(cb, 0n);
