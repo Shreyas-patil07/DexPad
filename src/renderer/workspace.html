@@ -8,41 +8,86 @@
 </head>
 <body>
   <div id="app" class="app-shell">
-
-    <header class="toolbar" role="banner">
-      <div class="brand" aria-label="DexPad">
-        <span class="brand-mark" aria-hidden="true">D</span>
-        <div class="brand-text">
-          <strong>DexPad</strong>
-          <small id="mode-label">Local workspace</small>
-        </div>
+    <header class="toolbar">
+      <div class="brand">
+        <span class="brand-mark">D</span>
+        <div class="brand-text"><strong>DexPad</strong><small id="mode-label">Local workspace</small></div>
       </div>
-      <nav id="controls" class="controls" aria-label="Add cards">
-        <button type="button" data-add="note"  id="btn-note">+ Note</button>
-        <button type="button" data-add="todo"  id="btn-todo">+ Todo</button>
-        <button type="button" data-add="link"  id="btn-link">+ Link</button>
+      <div class="toolbar-center">
+        <button class="icon-btn" id="btn-undo" title="Undo (Ctrl+Z)">↶</button>
+        <button class="icon-btn" id="btn-redo" title="Redo (Ctrl+Y)">↷</button>
+        <button class="search-btn" id="btn-search" title="Search (Ctrl+F)">⌕ <span>Search</span></button>
+      </div>
+      <nav id="controls" class="controls" aria-label="Add block">
+        <div class="add-menu-wrap">
+          <button type="button" id="btn-add" class="primary">+ Add</button>
+          <div id="add-menu" class="floating-menu" hidden>
+            <button data-add="note">Note</button><button data-add="todo">Todo</button>
+            <button data-add="link">Link</button><button data-add="markdown">Markdown</button>
+            <button data-add="image">Image</button><button data-add="file">File</button>
+            <button data-add="column">Column</button><button data-add="group">Group</button>
+            <button data-add="board">Board</button>
+          </div>
+        </div>
+        <button type="button" id="btn-templates">Templates</button>
+        <button type="button" id="btn-import">Import</button>
+        <button type="button" id="btn-export">Export</button>
         <button type="button" id="btn-save" class="primary">Save</button>
       </nav>
     </header>
 
-    <main id="canvas" class="canvas" aria-label="Spatial canvas">
-      <div id="world" class="world"></div>
-    </main>
+    <div id="workspace-body" class="workspace-body">
+      <aside id="sidebar" class="sidebar">
+        <div class="sidebar-title">Workspace</div>
+        <button class="side-item active" data-filter="all"><span>▦</span> All blocks <b id="count-all">0</b></button>
+        <button class="side-item" data-filter="note"><span>◈</span> Notes <b id="count-note">0</b></button>
+        <button class="side-item" data-filter="todo"><span>✓</span> Tasks <b id="count-todo">0</b></button>
+        <button class="side-item" data-filter="link"><span>↗</span> Links <b id="count-link">0</b></button>
+        <button class="side-item" data-filter="favorite"><span>★</span> Pinned <b id="count-favorite">0</b></button>
+        <div class="sidebar-divider"></div>
+        <div class="sidebar-title">Quick actions</div>
+        <button class="side-action" id="btn-command">⌘ Command palette</button>
+        <button class="side-action" id="btn-group-selected">▣ Group selected</button>
+        <button class="side-action" id="btn-pin-selected">★ Pin selected</button>
+        <button class="side-action" id="btn-connect">⌁ Connect selected</button>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-hint">Drag blocks freely. Shift-click to multi-select.</div>
+      </aside>
 
-    <div id="empty-state" class="empty-state" aria-live="polite" hidden>
-      <div class="empty-icon" aria-hidden="true">✦</div>
-      <strong>Your desktop, organized.</strong>
-      <span>Add notes, todos, and links on an infinite spatial canvas.<br>Pan with middle-click or spacebar drag. Stored 100% locally.</span>
+      <main id="canvas" class="canvas" aria-label="Spatial canvas">
+        <svg id="connections" class="connections" aria-hidden="true"></svg>
+        <div id="world" class="world"></div>
+        <div id="empty-state" class="empty-state" hidden>
+          <div class="empty-icon">✦</div><strong>Build your space.</strong>
+          <span>Drop notes, tasks, links, files and groups anywhere.</span>
+        </div>
+        <div id="selection-toolbar" class="selection-toolbar" hidden>
+          <span id="selection-count">0 selected</span><button id="btn-delete-selected">Delete</button>
+        </div>
+        <div id="zoom-hud" class="zoom-hud">
+          <button id="btn-zoom-out" class="zoom-btn">−</button><span id="zoom-level">100%</span>
+          <button id="btn-zoom-in" class="zoom-btn">+</button><button id="btn-zoom-reset" class="zoom-btn reset">Reset</button>
+        </div>
+      </main>
     </div>
 
-    <aside id="zoom-hud" class="zoom-hud" aria-label="Canvas navigation">
-      <button type="button" id="btn-zoom-out" class="zoom-btn" title="Zoom out (Ctrl -)">−</button>
-      <span id="zoom-level" class="zoom-level">100%</span>
-      <button type="button" id="btn-zoom-in" class="zoom-btn" title="Zoom in (Ctrl +)">+</button>
-      <button type="button" id="btn-zoom-reset" class="zoom-btn reset" title="Reset view (Ctrl 0)">Reset</button>
-    </aside>
+    <div id="search-overlay" class="overlay" hidden>
+      <div class="search-panel">
+        <input id="search-input" autofocus placeholder="Search your workspace…" />
+        <div id="search-results"></div>
+      </div>
+    </div>
 
+    <div id="command-overlay" class="overlay" hidden>
+      <div class="command-panel">
+        <input id="command-input" autofocus placeholder="Type a command…" />
+        <div id="command-results"></div>
+      </div>
+    </div>
+
+    <input id="import-input" type="file" accept="application/json,.json" hidden />
   </div>
+  <script src="blocks/registry.js"></script>
   <script src="workspace.js"></script>
 </body>
 </html>
