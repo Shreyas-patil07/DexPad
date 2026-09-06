@@ -13,7 +13,7 @@
       <div id="profile-tabs" class="profile-tabs" aria-label="Profiles"></div>
       <div class="toolbar-center"><button class="icon-btn" id="btn-undo" title="Undo (Ctrl+Z)">↶</button><button class="icon-btn" id="btn-redo" title="Redo (Ctrl+Y)">↷</button><button class="search-btn" id="btn-search" title="Search (Ctrl+F)">⌕ <span>Search</span></button></div>
       <nav id="controls" class="controls" aria-label="Add block">
-        <div class="add-menu-wrap"><button type="button" id="btn-add" class="primary">+ Add</button><div id="add-menu" class="floating-menu" hidden><button data-add="note">Note</button><button data-add="todo">Todo</button><button data-add="link">Link</button><button data-add="markdown">Markdown</button><button data-add="image">Image</button><button data-add="file">File</button><button data-add="column">Column</button><button data-add="group">Group</button><button data-add="board">Board</button></div></div>
+        <div class="add-menu-wrap"><button type="button" id="btn-add" class="primary">+ Add</button><div id="add-menu" class="floating-menu" hidden><button type="button" data-add="note">Note</button><button type="button" data-add="todo">Todo</button><button type="button" data-add="link">Link</button><button type="button" data-add="markdown">Markdown</button><button type="button" data-add="image">Image</button><button type="button" data-add="file">File</button><button type="button" data-add="column">Column</button><button type="button" data-add="group">Group</button><button type="button" data-add="board">Board</button></div></div>
         <div class="toolbar-menu-wrap"><button type="button" id="btn-templates">Templates</button></div><button type="button" id="btn-import">Import</button><button type="button" id="btn-export">Export</button><button type="button" id="btn-save" class="primary">Save</button>
       </nav>
     </header>
@@ -25,6 +25,6 @@
     <div id="command-overlay" class="overlay" hidden><div class="command-panel"><input id="command-input" placeholder="Type a command…" aria-label="Command palette" /><button type="button" class="overlay-close" data-close-overlay="command-overlay" aria-label="Close command palette">×</button><div id="command-results"></div></div></div>
     <input id="import-input" type="file" accept="application/json,.json" hidden />
   </div>
-  <script src="blocks/registry.js"></script><script src="profiles.js"></script><script src="workspace.js"></script>
+  <script src="blocks/registry.js"></script><script src="profiles.js"></script><script src="workspace.js"></script><script src="ui-fixes.js"></script>
 </body>
 </html>
