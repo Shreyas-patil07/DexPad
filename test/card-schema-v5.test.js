@@ -18,6 +18,20 @@ describe('schema v5', () => {
     assert.strictEqual(c.description.length, 5000);
     assert.strictEqual(c.content.markdown, '# x');
   });
+  test('deduplicates colliding card IDs and enforces parentId validation', () => {
+    const { normalizeCardGraph } = require('../src/main/card-schema.cjs');
+    const cards = [
+      normalizeCard({ id: 'card-1', type: 'note', parentId: 'card-1' }), // self parent
+      normalizeCard({ id: 'card-1', type: 'note', parentId: 'non-existent' }), // colliding ID + non-existent parent
+      normalizeCard({ id: 'card-2', type: 'group', children: ['card-1'] })
+    ];
+    const graph = normalizeCardGraph(cards);
+    assert.strictEqual(graph.length, 3);
+    assert.notStrictEqual(graph[0].id, graph[1].id); // ID collision resolved
+    assert.strictEqual(graph[0].parentId, null); // self parent pruned
+    assert.strictEqual(graph[1].parentId, null); // non-existent parent pruned
+    assert.strictEqual(graph[2].children.length, 1);
+  });
 });
 
 describe('urls and connections', () => {

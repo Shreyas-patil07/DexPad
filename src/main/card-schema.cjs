@@ -1,6 +1,7 @@
 'use strict';
 
 const CURRENT_SCHEMA_VERSION = 5;
+const MAX_CARDS = 5000;
 const MAX_CONNECTIONS = 5000;
 const MAX_TAGS = 50;
 const VALID_BLOCK_TYPES = ['note','todo','link','markdown','image','file','column','group','board'];
@@ -26,13 +27,14 @@ function normalizeCard(card, i = 0, defaultZ = 1) {
     ? [...new Set(card.tags.filter(t => typeof t === 'string' && t.trim()).map(t => t.trim().slice(0,30)))].slice(0, MAX_TAGS)
     : [];
   const children = Array.isArray(card.children) ? [...new Set(card.children.filter(id => typeof id === 'string' && id.trim()))].slice(0,500) : [];
-  
+  const parentId = typeof card.parentId === 'string' && card.parentId.trim() ? card.parentId.trim() : null;
+
   const rawUrl = text(card.url, rawContent.url, 2000);
   const url = !rawUrl || isValidUrl(rawUrl) ? rawUrl : '';
 
   const normalized = {
     id: typeof card.id === 'string' && card.id.trim() ? card.id.trim() : `block-${Date.now()}-${i}-${Math.random().toString(36).slice(2,8)}`,
-    type, color, pinned: Boolean(card.pinned), locked: Boolean(card.locked), collapsed: Boolean(card.collapsed), tags,
+    parentId, type, color, pinned: Boolean(card.pinned), locked: Boolean(card.locked), collapsed: Boolean(card.collapsed), tags,
     title: text(card.title, rawContent.title, 200), body: text(card.body, rawContent.body, 10000), url,
     done: typeof card.done === 'boolean' ? card.done : Boolean(rawContent.done),
     markdown: text(card.markdown, rawContent.markdown, 20000), src: text(card.src, rawContent.src, 200000),
@@ -46,10 +48,31 @@ function normalizeCard(card, i = 0, defaultZ = 1) {
   normalized.content = { title: normalized.title, body: normalized.body, url: normalized.url, done: normalized.done, markdown: normalized.markdown, src: normalized.src, path: normalized.path, description: normalized.description };
   return normalized;
 }
+// note: deduplicates duplicate card IDs and caps graph size at MAX_CARDS (5000)
 function normalizeCardGraph(cards) {
-  const normalized = Array.isArray(cards) ? cards.filter(Boolean) : [];
-  const validIds = new Set(normalized.map(c => c.id));
-  return normalized.map(card => ({ ...card, children: Array.isArray(card.children) ? card.children.filter(id => id !== card.id && validIds.has(id)).slice(0,500) : [] }));
+  const rawList = Array.isArray(cards) ? cards.filter(Boolean) : [];
+  const seenIds = new Set();
+  const deduplicated = [];
+
+  for (let i = 0; i < rawList.length && deduplicated.length < MAX_CARDS; i += 1) {
+    const raw = rawList[i];
+    let cardId = raw.id;
+    if (seenIds.has(cardId)) {
+      cardId = `${cardId}-${Date.now().toString(36)}-${i}`;
+    }
+    seenIds.add(cardId);
+    deduplicated.push({ ...raw, id: cardId });
+  }
+
+  const validIds = new Set(deduplicated.map(c => c.id));
+  return deduplicated.map(card => {
+    const cleanParentId = card.parentId && validIds.has(card.parentId) && card.parentId !== card.id ? card.parentId : null;
+    return {
+      ...card,
+      parentId: cleanParentId,
+      children: Array.isArray(card.children) ? card.children.filter(id => id !== card.id && validIds.has(id)).slice(0, 500) : []
+    };
+  });
 }
 // note: uses Set with canonical sorted edge keys to guarantee O(N) deduplication
 function normalizeConnections(connections, cards) {
@@ -86,5 +109,5 @@ function migrateState(rawState) {
     connections: normalizeConnections(state.connections, cards)
   };
 }
-module.exports = { CURRENT_SCHEMA_VERSION, MAX_CONNECTIONS, MAX_TAGS, VALID_BLOCK_TYPES, VALID_COLORS, isValidUrl, normalizeCard, normalizeCardGraph, normalizeConnections, migrateState };
+module.exports = { CURRENT_SCHEMA_VERSION, MAX_CARDS, MAX_CONNECTIONS, MAX_TAGS, VALID_BLOCK_TYPES, VALID_COLORS, isValidUrl, normalizeCard, normalizeCardGraph, normalizeConnections, migrateState };
 

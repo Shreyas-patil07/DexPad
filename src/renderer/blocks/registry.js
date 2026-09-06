@@ -14,10 +14,10 @@
     el.className = 'block-input';
     el.placeholder = placeholder;
     el.value = value ?? '';
-    el.disabled = !!ctx.disabled;
+    el.disabled = Boolean(ctx.disabled || ctx.wallpaper);
     el.dataset.field = field;
     el.addEventListener('input', () => ctx.patch({ [field]: el.value }));
-    el.addEventListener('blur', ctx.flush);
+    el.addEventListener('blur', () => { if (typeof ctx.flush === 'function') ctx.flush(); });
     return el;
   }
 
@@ -26,10 +26,10 @@
     el.className = 'block-textarea';
     el.placeholder = placeholder;
     el.value = value ?? '';
-    el.disabled = !!ctx.disabled;
+    el.disabled = Boolean(ctx.disabled || ctx.wallpaper);
     el.dataset.field = field;
     el.addEventListener('input', () => ctx.patch({ [field]: el.value }));
-    el.addEventListener('blur', ctx.flush);
+    el.addEventListener('blur', () => { if (typeof ctx.flush === 'function') ctx.flush(); });
     return el;
   }
 
@@ -44,9 +44,12 @@
     const cb = document.createElement('input');
     cb.type = 'checkbox';
     cb.checked = !!ctx.card.done;
-    cb.disabled = !!ctx.disabled;
+    cb.disabled = Boolean(ctx.disabled || ctx.wallpaper);
     cb.dataset.field = 'done';
-    cb.addEventListener('change', () => { ctx.patch({ done: cb.checked }); ctx.flush(); });
+    cb.addEventListener('change', () => {
+      ctx.patch({ done: cb.checked });
+      if (typeof ctx.flush === 'function') ctx.flush();
+    });
     row.append(cb, input(ctx, ctx.card.title, 'title', 'Task description'));
     body.append(row);
   });
@@ -63,15 +66,65 @@
     }
   });
 
+  function escapeHtml(str) {
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderMarkdown(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    const lines = raw.split(/\r?\n/);
+    const htmlLines = lines.map(line => {
+      // headings
+      const hMatch = line.match(/^(#{1,6})\s+(.+)$/);
+      if (hMatch) {
+        const level = hMatch[1].length;
+        const text = escapeHtml(hMatch[2]);
+        return `<h${level} style="font-size:${1.4 - level * 0.12}em;margin:4px 0;font-weight:700;">${text}</h${level}>`;
+      }
+      // blockquote
+      if (line.startsWith('> ')) {
+        return `<blockquote style="border-left:2px solid #76a8ff;padding-left:8px;color:#9da9b8;margin:4px 0;">${escapeHtml(line.slice(2))}</blockquote>`;
+      }
+      // list item
+      if (/^\s*[-*]\s+/.test(line)) {
+        const itemText = line.replace(/^\s*[-*]\s+/, '');
+        return `<li style="margin-left:14px;">${formatInlineMarkdown(itemText)}</li>`;
+      }
+      // code block single-line
+      if (line.startsWith('```') && line.endsWith('```') && line.length > 6) {
+        return `<code style="background:#151b24;padding:2px 4px;border-radius:4px;font-family:monospace;">${escapeHtml(line.slice(3, -3))}</code>`;
+      }
+      // standard paragraph
+      return line.trim() ? `<p style="margin:2px 0;">${formatInlineMarkdown(line)}</p>` : '<br/>';
+    });
+    return htmlLines.join('');
+  }
+
+  function formatInlineMarkdown(text) {
+    let s = escapeHtml(text);
+    // inline code `code`
+    s = s.replace(/`([^`]+)`/g, '<code style="background:#171d26;padding:1px 4px;border-radius:4px;font-family:monospace;font-size:0.9em;">$1</code>');
+    // bold **bold**
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // italic *italic*
+    s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    return s;
+  }
+
+  Registry.renderMarkdown = renderMarkdown;
+
   Registry.register('markdown', (body, ctx) => {
     body.append(input(ctx, ctx.card.title, 'title', 'Markdown title'));
     const editor = area(ctx, ctx.card.markdown || ctx.card.body, 'markdown', 'Write Markdown…');
     body.append(editor);
     const preview = document.createElement('div');
     preview.className = 'markdown-preview';
-    preview.textContent = (ctx.card.markdown || ctx.card.body || '')
-      .replace(/^#{1,6}\s*/gm, '')
-      .replace(/[\*_`]/g, '');
+    preview.innerHTML = renderMarkdown(ctx.card.markdown || ctx.card.body || '');
     body.append(preview);
   });
 
@@ -123,8 +176,8 @@
     body.append(input(ctx, ctx.card.title, 'title', 'Board name'));
     const open = document.createElement('button');
     open.type = 'button'; open.className = 'link-preview'; open.textContent = 'Open board →';
-    open.disabled = !!ctx.disabled;
-    open.addEventListener('click', () => ctx.openBoard(ctx.card.id));
+    open.disabled = Boolean(ctx.disabled || ctx.wallpaper);
+    open.addEventListener('click', () => { if (typeof ctx.openBoard === 'function') ctx.openBoard(ctx.card.id); });
     body.append(open);
   });
 
