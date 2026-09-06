@@ -6,26 +6,32 @@ if (process.platform !== 'win32') {
 
 const koffi = require('koffi');
 
+// Koffi 2.x represents Win32 opaque handles as external pointer values.
+// Define HWND explicitly instead of using void * and attempting to decode
+// opaque handles as numbers/Buffers in JavaScript.
+const HANDLE = koffi.pointer('HANDLE', koffi.opaque());
+const HWND   = koffi.alias('HWND', HANDLE);
+
 // ─── Win32 API bindings ───────────────────────────────────────────────────────
 const user32 = koffi.load('user32.dll');
 
-const FindWindowW = user32.func('__stdcall', 'FindWindowW', 'void *', ['str16', 'str16']);
-const FindWindowExW = user32.func('__stdcall', 'FindWindowExW', 'void *', ['void *', 'void *', 'str16', 'str16']);
-const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', ['void *', 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
-const SetParent = user32.func('__stdcall', 'SetParent', 'void *', ['void *', 'void *']);
-const GetParent = user32.func('__stdcall', 'GetParent', 'void *', ['void *']);
-const IsWindow = user32.func('__stdcall', 'IsWindow', 'int32', ['void *']);
-const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', ['void *', 'int32', 'intptr_t']);
-const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_t', ['void *', 'int32']);
-const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', ['void *', 'void *', 'int32', 'int32', 'int32', 'int32', 'uint32']);
-const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', ['void *', 'void *']);
-const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
-const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAttributes', 'int32', ['void *', 'uint32', 'uint8', 'uint32']);
+const FindWindowW = user32.func('__stdcall', 'FindWindowW', HWND, ['str16', 'str16']);
+const FindWindowExW = user32.func('__stdcall', 'FindWindowExW', HWND, [HWND, HWND, 'str16', 'str16']);
+const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', [HWND, 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
+const SetParent = user32.func('__stdcall', 'SetParent', HWND, [HWND, HWND]);
+const GetParent = user32.func('__stdcall', 'GetParent', HWND, [HWND]);
+const IsWindow = user32.func('__stdcall', 'IsWindow', 'int32', [HWND]);
+const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', [HWND, 'int32', 'intptr_t']);
+const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_t', [HWND, 'int32']);
+const SetWindowPos = user32.func('__stdcall', 'SetWindowPos', 'int32', [HWND, HWND, 'int32', 'int32', 'int32', 'int32', 'uint32']);
+const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', [HWND, 'void *']);
+const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', [HWND, 'int32']);
+const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAttributes', 'int32', [HWND, 'uint32', 'uint8', 'uint32']);
 
-const OpenDesktopA = user32.func('__stdcall', 'OpenDesktopA', 'void *', ['string', 'uint32', 'bool', 'uint32']);
-const SetThreadDesktop = user32.func('__stdcall', 'SetThreadDesktop', 'bool', ['void *']);
+const OpenDesktopA = user32.func('__stdcall', 'OpenDesktopA', HWND, ['str', 'uint32', 'bool', 'uint32']);
+const SetThreadDesktop = user32.func('__stdcall', 'SetThreadDesktop', 'bool', [HWND]);
 
-const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', ['void *', 'intptr_t']);
+const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', [HWND, 'intptr_t']);
 const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
 
 // ─── Win32 constants ──────────────────────────────────────────────────────────
@@ -53,27 +59,20 @@ const SW_SHOWNOACTIVATE = 4;
 const SMTO_NORMAL = 0;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function hwndToNum(handle) {
-  if (!handle) return 0;
-  if (typeof handle === 'number') return handle;
-  if (Buffer.isBuffer(handle)) {
-    return handle.length >= 8
-      ? Number(handle.readBigUInt64LE(0))
-      : handle.readUInt32LE(0);
-  }
-  return 0;
-}
-
 function isNull(handle) {
-  return hwndToNum(handle) === 0;
+  return handle == null;
 }
 
 function sameHwnd(a, b) {
-  return hwndToNum(a) === hwndToNum(b) && hwndToNum(a) !== 0;
+  return a != null && b != null && a === b;
 }
 
 function electronHwnd(win) {
-  return hwndToNum(win.getNativeWindowHandle());
+  const handle = win.getNativeWindowHandle();
+  if (!handle || handle.length === 0) {
+    throw new Error('Electron returned an empty native window handle.');
+  }
+  return handle;
 }
 
 // ─── WorkerW discovery ────────────────────────────────────────────────────────
@@ -88,42 +87,37 @@ function spawnWorkerW(progman) {
   }
 }
 
-// Switch calling thread to Windows interactive "Default" desktop if launched from a virtual or alternate session
 function ensureDefaultDesktop() {
   try {
     const hDesk = OpenDesktopA('Default', 0, false, 0x10000000);
-    if (!isNull(hDesk)) {
-      SetThreadDesktop(hDesk);
-    }
+    if (!isNull(hDesk)) SetThreadDesktop(hDesk);
   } catch (_) {
-    // best-effort fallback
+    // Best-effort fallback; normal interactive Explorer should already be on Default.
   }
 }
 
 function findWorkerW() {
   let progman = FindWindowW('Progman', null);
   if (isNull(progman)) {
-    // If not found on current thread desktop, switch thread to "Default" interactive desktop
     ensureDefaultDesktop();
     progman = FindWindowW('Progman', null);
   }
-  if (isNull(progman)) throw new Error('Progman not found — is Explorer running?');
+  if (isNull(progman)) {
+    throw new Error('Progman not found — is Explorer running?');
+  }
 
   spawnWorkerW(progman);
 
-  // Windows 11 / newer shell layouts may expose a direct WorkerW child of Progman.
+  // Modern shell: find a WorkerW directly beneath Progman without SHELLDLL_DefView.
   let child = null;
   while (true) {
     const next = FindWindowExW(progman, child, 'WorkerW', null);
     if (isNull(next)) break;
-    if (isNull(FindWindowExW(next, null, 'SHELLDLL_DefView', null))) {
-      return next;
-    }
+    if (isNull(FindWindowExW(next, null, 'SHELLDLL_DefView', null))) return next;
     child = next;
   }
 
-  // Classic shell layout: find the WorkerW containing SHELLDLL_DefView and
-  // use the following WorkerW sibling in z-order.
+  // Classic layout: find the WorkerW containing SHELLDLL_DefView, then the next WorkerW sibling.
   let shellParent = null;
   const cb = koffi.register((hwnd) => {
     if (!isNull(FindWindowExW(hwnd, null, 'SHELLDLL_DefView', null))) {
@@ -139,7 +133,7 @@ function findWorkerW() {
     koffi.unregister(cb);
   }
 
-  if (!shellParent) throw new Error('SHELLDLL_DefView not found.');
+  if (isNull(shellParent)) throw new Error('SHELLDLL_DefView not found.');
 
   const sibling = FindWindowExW(null, shellParent, 'WorkerW', null);
   if (!isNull(sibling)) return sibling;
@@ -165,29 +159,25 @@ function attachToDesktop(browserWindow, bounds) {
   }
 
   const hwnd = electronHwnd(browserWindow);
-  if (!hwnd) throw new Error('Electron window has no native HWND.');
-
   const workerW = findWorkerW();
-  if (!workerW || isNull(workerW)) throw new Error('WorkerW handle is invalid.');
+  if (isNull(workerW)) throw new Error('WorkerW handle is invalid.');
 
   prepareWindow(hwnd);
 
-  // Convert the Electron top-level window into a child before reparenting.
   const style = Number(GetWindowLongPtrW(hwnd, GWL_STYLE));
   SetWindowLongPtrW(hwnd, GWL_STYLE,
     (style & ~WS_POPUP) | WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS
   );
 
-  // IMPORTANT: SetParent returns the PREVIOUS parent, not the new parent.
-  // A top-level Electron window normally has no parent, so NULL is a successful
-  // return value here. Verify the operation with GetParent instead.
+  // SetParent returns the PREVIOUS parent, so a NULL result is normal here.
   SetParent(hwnd, workerW);
+
+  // Verify the NEW parent explicitly.
   const actualParent = GetParent(hwnd);
   if (!sameHwnd(actualParent, workerW)) {
     throw new Error('SetParent failed — window is not attached to WorkerW.');
   }
 
-  // WorkerW child coordinates are relative to WorkerW's client origin.
   const rect = Buffer.alloc(16);
   if (!GetWindowRect(workerW, rect)) {
     throw new Error('GetWindowRect(WorkerW) failed.');
