@@ -77,7 +77,7 @@
 
   Registry.register('image', (body, ctx) => {
     body.append(input(ctx, ctx.card.title, 'title', 'Image title'));
-    if (ctx.card.src) {
+    if (ctx.card.src && ctx.validateImageSource(ctx.card.src)) {
       const img = document.createElement('img');
       img.className = 'block-image';
       img.src = ctx.card.src;
@@ -89,7 +89,7 @@
     } else {
       const hint = document.createElement('div');
       hint.className = 'block-placeholder';
-      hint.textContent = 'Paste an image URL or data URI below.';
+      hint.textContent = 'Paste an HTTP(S) image URL or data URI below.';
       body.append(hint);
     }
     body.append(input(ctx, ctx.card.src, 'src', 'https://… or data:image/…'));
