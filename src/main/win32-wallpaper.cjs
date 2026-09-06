@@ -26,7 +26,7 @@ const kernel32 = koffi.load('kernel32.dll');
 const FindWindowW = user32.func('__stdcall', 'FindWindowW', HWND, ['str16', 'str16']);
 const FindWindowExW = user32.func('__stdcall', 'FindWindowExW', HWND, [HWND, HWND, 'str16', 'str16']);
 const SetParent = user32.func('__stdcall', 'SetParent', HWND, [HWND, HWND]);
-const GetParent = user32.func('__stdcall', 'GetParent', HWND, [] instanceof Array ? [HWND] : [HWND]);
+const GetParent = user32.func('__stdcall', 'GetParent', HWND, [HWND]);
 const IsWindow = user32.func('__stdcall', 'IsWindow', 'int32', [HWND]);
 const GetClassNameW = user32.func('__stdcall', 'GetClassNameW', 'int32', [HWND, 'void *', 'int32']);
 const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', [HWND, 'int32', 'intptr_t']);
@@ -40,6 +40,7 @@ const SetLastError = kernel32.func('__stdcall', 'SetLastError', 'void', ['uint32
 
 const EnumWindowsProc = koffi.proto('__stdcall', 'DexPadEnumWindowsProc', 'int32', [HWND, 'intptr_t']);
 const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsProc), 'intptr_t']);
+const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', [HWND, 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
 
 const GWL_STYLE = -16;
 const GWL_EXSTYLE = -20;
@@ -58,12 +59,14 @@ const HWND_BOTTOM = 1n;
 const HWND_TOP = 0n;
 const SWP_NOMOVE = 0x0002;
 const SWP_NOSIZE = 0x0001;
+const SWP_NOZORDER = 0x0004;
 const SWP_NOACTIVATE = 0x0010;
 const SWP_NOSENDCHANGING = 0x0400;
 const SWP_SHOWWINDOW = 0x0040;
 const SWP_FRAMECHANGED = 0x0020;
 const SWP_NOOWNERZORDER = 0x0200;
 const SW_SHOWNOACTIVATE = 4;
+const SMTO_NORMAL = 0x0000;
 
 function hwndToBigInt(handle) {
   if (handle == null) return 0n;
@@ -125,8 +128,7 @@ function getRect(hwnd) {
   const rect = Buffer.alloc(16);
   SetLastError(0);
   if (!GetWindowRect(hwnd, rect)) {
-    const error = win32Error();
-    throw new Error(`GetWindowRect failed for ${hwndLabel(hwnd)}. win32Error=${error}`);
+    throw new Error(`GetWindowRect failed for ${hwndLabel(hwnd)}. win32Error=${win32Error()}`);
   }
   const left = rect.readInt32LE(0);
   const top = rect.readInt32LE(4);
@@ -136,44 +138,31 @@ function getRect(hwnd) {
 }
 
 function spawnWorkerW(progman) {
-  // 0x052C is the shell message traditionally used to ensure the desktop
-  // WorkerW infrastructure exists. We keep it as a best-effort probe.
-  const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', [HWND, 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
-  const SMTO_NORMAL = 0x0000;
-  for (const [wParam, lParam] of [[0x0D, 0x01]]) {
-    try {
-      const out = Buffer.alloc(8);
-      SetLastError(0);
-      const result = SendMessageTimeoutW(progman, 0x052C, wParam, lParam, SMTO_NORMAL, 2000, out);
-      debug('spawnWorkerW: probe', {
-        wParam: `0x${wParam.toString(16)}`,
-        lParam: `0x${lParam.toString(16)}`,
-        result,
-        lastErrorImmediatelyAfterCall: win32Error(),
-        out: out.toString('hex')
-      });
-    } catch (err) {
-      debugError('spawnWorkerW', err);
-    }
+  try {
+    const out = Buffer.alloc(8);
+    SetLastError(0);
+    const result = SendMessageTimeoutW(progman, 0x052C, 0x0D, 0x01, SMTO_NORMAL, 2000, out);
+    debug('spawnWorkerW: probe', {
+      result,
+      lastErrorImmediatelyAfterCall: win32Error(),
+      out: out.toString('hex')
+    });
+  } catch (err) {
+    debugError('spawnWorkerW', err);
   }
 }
 
 function findShellViewOwner() {
   let owner = 0n;
   const callback = koffi.register((hwnd) => {
-    const shellView = findChildByClass(hwnd, 0n, 'SHELLDLL_DefView');
-    if (!isNull(shellView)) {
+    if (!isNull(findChildByClass(hwnd, 0n, 'SHELLDLL_DefView'))) {
       owner = hwnd;
       return 0;
     }
     return 1;
   }, koffi.pointer(EnumWindowsProc));
-
-  try {
-    EnumWindows(callback, 0n);
-  } finally {
-    koffi.unregister(callback);
-  }
+  try { EnumWindows(callback, 0n); }
+  finally { koffi.unregister(callback); }
   return owner;
 }
 
@@ -184,17 +173,12 @@ function findTopLevelWorkerW() {
     if (className(hwnd) !== 'WorkerW') return 1;
     const childShell = findChildByClass(hwnd, 0n, 'SHELLDLL_DefView');
     const parent = GetParent(hwnd);
-    const candidate = { hwnd, parent, childShell, style: getStyle(hwnd, GWL_STYLE), exStyle: getStyle(hwnd, GWL_EXSTYLE) };
-    candidates.push(candidate);
+    candidates.push({ hwnd, parent, childShell, style: getStyle(hwnd, GWL_STYLE), exStyle: getStyle(hwnd, GWL_EXSTYLE) });
     if (isNull(childShell) && isNull(selected)) selected = hwnd;
     return 1;
   }, koffi.pointer(EnumWindowsProc));
-
-  try {
-    EnumWindows(callback, 0n);
-  } finally {
-    koffi.unregister(callback);
-  }
+  try { EnumWindows(callback, 0n); }
+  finally { koffi.unregister(callback); }
 
   debug('top-level WorkerW candidates', candidates.map(c => ({
     hwnd: hwndLabel(c.hwnd),
@@ -208,12 +192,10 @@ function findTopLevelWorkerW() {
 
 function findDesktopTarget() {
   debug('findDesktopTarget: BEGIN');
-
   const progman = FindWindowW('Progman', null);
-  if (isNull(progman)) throw new Error('Progman not found — is Explorer running?');
-  if (IsWindow(progman) === 0) throw new Error(`Progman handle is invalid: ${hwndLabel(progman)}`);
-  inspectWindow('Progman', progman);
+  if (isNull(progman) || IsWindow(progman) === 0) throw new Error('Progman not found — is Explorer running?');
 
+  inspectWindow('Progman', progman);
   spawnWorkerW(progman);
 
   const shellViewOwner = findShellViewOwner();
@@ -225,10 +207,6 @@ function findDesktopTarget() {
   const progmanExStyle = getStyle(progman, GWL_EXSTYLE);
   const raisedDesktop = (progmanExStyle & WS_EX_NOREDIRECTIONBITMAP) !== 0;
 
-  // Windows 11 raised-desktop layout: wallpaper belongs to Progman and is
-  // explicitly ordered behind SHELLDLL_DefView. This is the model used by
-  // mature wallpaper implementations; the top-level WorkerW is NOT the
-  // parent in this configuration.
   if (raisedDesktop) {
     const childWorkerW = findChildByClass(progman, 0n, 'WorkerW');
     debug('findDesktopTarget: RAISED_DESKTOP', {
@@ -238,34 +216,14 @@ function findDesktopTarget() {
       shellView: hwndLabel(shellView),
       childWorkerW: hwndLabel(childWorkerW)
     });
-
     if (isNull(shellView)) throw new Error('Raised desktop detected but SHELLDLL_DefView is missing.');
-    return {
-      kind: 'raised',
-      parent: progman,
-      zAfter: shellView,
-      workerW: childWorkerW,
-      progman,
-      shellView
-    };
+    return { kind: 'raised', parent: progman, zAfter: shellView, workerW: childWorkerW, progman, shellView };
   }
 
   const workerW = findTopLevelWorkerW();
   if (isNull(workerW)) throw new Error('No suitable top-level WorkerW found.');
-
-  debug('findDesktopTarget: CLASSIC', {
-    progman: hwndLabel(progman),
-    workerW: hwndLabel(workerW)
-  });
-
-  return {
-    kind: 'classic',
-    parent: workerW,
-    zAfter: HWND_TOP,
-    workerW,
-    progman,
-    shellView
-  };
+  debug('findDesktopTarget: CLASSIC', { progman: hwndLabel(progman), workerW: hwndLabel(workerW) });
+  return { kind: 'classic', parent: workerW, zAfter: HWND_TOP, workerW, progman, shellView };
 }
 
 function prepareWindow(hwnd) {
@@ -274,13 +232,7 @@ function prepareWindow(hwnd) {
   SetLastError(0);
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, next);
   const error = win32Error();
-  debug('prepareWindow: exStyle', {
-    before: `0x${before.toString(16).toUpperCase()}`,
-    next: `0x${next.toString(16).toUpperCase()}`,
-    actual: `0x${getStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`,
-    immediateLastError: error
-  });
-
+  debug('prepareWindow: exStyle', { before: `0x${before.toString(16).toUpperCase()}`, next: `0x${next.toString(16).toUpperCase()}`, actual: `0x${getStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`, immediateLastError: error });
   SetLastError(0);
   const layered = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
   const layeredError = win32Error();
@@ -295,12 +247,7 @@ function setChildStyle(hwnd) {
   SetWindowLongPtrW(hwnd, GWL_STYLE, next);
   const error = win32Error();
   const actual = getStyle(hwnd, GWL_STYLE);
-  debug('setChildStyle', {
-    before: `0x${before.toString(16).toUpperCase()}`,
-    next: `0x${next.toString(16).toUpperCase()}`,
-    actual: `0x${actual.toString(16).toUpperCase()}`,
-    immediateLastError: error
-  });
+  debug('setChildStyle', { before: `0x${before.toString(16).toUpperCase()}`, next: `0x${next.toString(16).toUpperCase()}`, actual: `0x${actual.toString(16).toUpperCase()}`, immediateLastError: error });
   if (actual !== next) throw new Error(`Failed to set WS_CHILD style. expected=0x${next.toString(16)} actual=0x${actual.toString(16)} win32Error=${error}`);
 }
 
@@ -310,13 +257,7 @@ function trySetParent(hwnd, target) {
   const beforeExStyle = getStyle(hwnd, GWL_EXSTYLE);
 
   SetLastError(0);
-  let previousParent;
-  try {
-    previousParent = SetParent(hwnd, target.parent);
-  } catch (err) {
-    debugError('SetParent native invocation threw', err);
-    throw err;
-  }
+  const previousParent = SetParent(hwnd, target.parent);
   const immediateLastError = win32Error();
   const actualParent = GetParent(hwnd);
   const actualParentClass = isNull(actualParent) ? '' : className(actualParent);
@@ -338,23 +279,17 @@ function trySetParent(hwnd, target) {
   });
 
   if (isNull(actualParent) || hwndToBigInt(actualParent) !== hwndToBigInt(target.parent)) {
-    throw new Error(
-      `SetParent failed — mode=${target.kind} requested=${hwndLabel(target.parent)} ` +
-      `actual=${hwndLabel(actualParent)} class=${actualParentClass || 'NULL'} ` +
-      `immediateWin32Error=${immediateLastError}`
-    );
+    throw new Error(`SetParent failed — mode=${target.kind} requested=${hwndLabel(target.parent)} actual=${hwndLabel(actualParent)} class=${actualParentClass || 'NULL'} immediateWin32Error=${immediateLastError}`);
   }
 
+  debug('SetParent SUCCESS', { mode: target.kind, beforeParent: hwndLabel(beforeParent), parent: hwndLabel(actualParent) });
   return { previousParent, actualParent, immediateLastError };
 }
 
 function attachToDesktop(browserWindow, bounds) {
   debug('============================================================');
   debug('attachToDesktop: BEGIN', { bounds });
-
-  if (!browserWindow || browserWindow.isDestroyed()) {
-    throw new Error('Cannot attach a destroyed BrowserWindow.');
-  }
+  if (!browserWindow || browserWindow.isDestroyed()) throw new Error('Cannot attach a destroyed BrowserWindow.');
 
   const hwndBuffer = browserWindow.getNativeWindowHandle();
   const hwnd = hwndToBigInt(hwndBuffer);
@@ -373,9 +308,6 @@ function attachToDesktop(browserWindow, bounds) {
   const parentRect = getRect(target.parent);
   const targetX = Math.round((bounds?.x || 0) - parentRect.left);
   const targetY = Math.round((bounds?.y || 0) - parentRect.top);
-
-  // Raised desktop: place the DexPad window directly after SHELLDLL_DefView
-  // in Progman's child Z-order. Classic desktop: the WorkerW is the parent.
   const insertAfter = target.zAfter || HWND_TOP;
   const flags = SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOOWNERZORDER;
 
@@ -400,19 +332,13 @@ function attachToDesktop(browserWindow, bounds) {
   const showError = win32Error();
   debug('ShowWindow exact result', { result: showResult, immediateLastError: showError });
 
-  const finalParent = GetParent(hwnd);
   inspectWindow('Electron FINAL after attach', hwnd);
-
+  const finalParent = GetParent(hwnd);
   if (isNull(finalParent) || hwndToBigInt(finalParent) !== hwndToBigInt(target.parent)) {
     throw new Error(`Wallpaper parent changed unexpectedly — expected=${hwndLabel(target.parent)} actual=${hwndLabel(finalParent)}`);
   }
 
-  debug('attachToDesktop: SUCCESS', {
-    mode: target.kind,
-    parent: hwndLabel(target.parent),
-    workerW: hwndLabel(target.workerW),
-    shellView: hwndLabel(target.shellView)
-  });
+  debug('attachToDesktop: SUCCESS', { mode: target.kind, parent: hwndLabel(target.parent), workerW: hwndLabel(target.workerW), shellView: hwndLabel(target.shellView) });
   debug('============================================================');
   return true;
 }
@@ -420,7 +346,6 @@ function attachToDesktop(browserWindow, bounds) {
 function detachFromDesktop(browserWindow) {
   debug('detachFromDesktop: BEGIN');
   if (!browserWindow || browserWindow.isDestroyed()) return;
-
   const hwnd = hwndToBigInt(browserWindow.getNativeWindowHandle());
   inspectWindow('Electron BEFORE detach', hwnd);
 
@@ -430,18 +355,10 @@ function detachFromDesktop(browserWindow) {
     SetLastError(0);
     SetWindowLongPtrW(hwnd, GWL_STYLE, nextStyle);
     const styleError = win32Error();
-
     SetLastError(0);
     const previousParent = SetParent(hwnd, 0n);
     const detachError = win32Error();
-
-    debug('detach: SetParent(NULL)', {
-      previousParent: hwndLabel(previousParent),
-      immediateLastError: detachError,
-      actualParent: hwndLabel(GetParent(hwnd)),
-      restoredStyle: `0x${nextStyle.toString(16).toUpperCase()}`,
-      styleWriteLastError: styleError
-    });
+    debug('detach: SetParent(NULL)', { previousParent: hwndLabel(previousParent), immediateLastError: detachError, actualParent: hwndLabel(GetParent(hwnd)), restoredStyle: `0x${nextStyle.toString(16).toUpperCase()}`, styleWriteLastError: styleError });
   }
 
   const exStyle = getStyle(hwnd, GWL_EXSTYLE);
@@ -449,11 +366,7 @@ function detachFromDesktop(browserWindow) {
   SetLastError(0);
   SetWindowLongPtrW(hwnd, GWL_EXSTYLE, nextExStyle);
   const exError = win32Error();
-  debug('detach: restore exStyle', {
-    nextExStyle: `0x${nextExStyle.toString(16).toUpperCase()}`,
-    immediateLastError: exError
-  });
-
+  debug('detach: restore exStyle', { nextExStyle: `0x${nextExStyle.toString(16).toUpperCase()}`, immediateLastError: exError });
   SetLastError(0);
   SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
   debug('Electron AFTER detach', { parent: hwndLabel(GetParent(hwnd)), style: `0x${getStyle(hwnd, GWL_STYLE).toString(16).toUpperCase()}`, exStyle: `0x${getStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`, win32Error: win32Error() });
@@ -473,26 +386,38 @@ function setClickThrough(browserWindow, enabled) {
   const styleError = win32Error();
   browserWindow.setIgnoreMouseEvents(enabled);
 
+  // Do not change Z-order here. In raised-desktop mode the parent is Progman
+  // and the required order is maintained separately by sendToBottom().
   SetLastError(0);
-  const posResult = SetWindowPos(hwnd, 0n, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  const posResult = SetWindowPos(hwnd, 0n, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
   const posError = win32Error();
-
-  debug('setClickThrough', {
-    enabled,
-    style: `0x${nextExStyle.toString(16).toUpperCase()}`,
-    actual: `0x${getStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`,
-    styleLastError: styleError,
-    setWindowPosResult: posResult,
-    setWindowPosLastError: posError
-  });
+  debug('setClickThrough', { enabled, style: `0x${nextExStyle.toString(16).toUpperCase()}`, actual: `0x${getStyle(hwnd, GWL_EXSTYLE).toString(16).toUpperCase()}`, styleLastError: styleError, setWindowPosResult: posResult, setWindowPosLastError: posError });
 }
 
 function sendToBottom(browserWindow) {
   const hwnd = hwndToBigInt(browserWindow.getNativeWindowHandle());
+  const parent = GetParent(hwnd);
+  if (!isNull(parent)) {
+    const progman = FindWindowW('Progman', null);
+    const progmanExStyle = isNull(progman) ? 0 : getStyle(progman, GWL_EXSTYLE);
+    const raisedDesktop = (progmanExStyle & WS_EX_NOREDIRECTIONBITMAP) !== 0;
+    const shellOwner = !isNull(progman) ? findShellViewOwner() : 0n;
+    const shellView = !isNull(shellOwner) ? findChildByClass(shellOwner, 0n, 'SHELLDLL_DefView') : 0n;
+
+    if (raisedDesktop && !isNull(progman) && hwndToBigInt(parent) === hwndToBigInt(progman) && !isNull(shellView)) {
+      SetLastError(0);
+      const result = SetWindowPos(hwnd, shellView, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+      const error = win32Error();
+      debug('sendToBottom: raised-desktop reinsert after SHELLDLL_DefView', { result, immediateLastError: error, hwnd: hwndLabel(hwnd), parent: hwndLabel(parent), shellView: hwndLabel(shellView) });
+      if (!result) throw new Error(`SetWindowPos(raised desktop Z-order) failed. win32Error=${error}`);
+      return;
+    }
+  }
+
   SetLastError(0);
   const result = SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
   const error = win32Error();
-  debug('sendToBottom', { result, immediateLastError: error, hwnd: hwndLabel(hwnd) });
+  debug('sendToBottom: classic', { result, immediateLastError: error, hwnd: hwndLabel(hwnd) });
   if (!result) throw new Error(`SetWindowPos(bottom) failed. win32Error=${error}`);
 }
 
@@ -508,10 +433,4 @@ function isWindowAttached(browserWindow) {
   }
 }
 
-module.exports = {
-  attachToDesktop,
-  detachFromDesktop,
-  setClickThrough,
-  sendToBottom,
-  isWindowAttached
-};
+module.exports = { attachToDesktop, detachFromDesktop, setClickThrough, sendToBottom, isWindowAttached };
