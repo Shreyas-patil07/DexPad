@@ -208,6 +208,7 @@ let attachTries    = 0;
 let attachBusy     = false;
 let attachTimer    = null;
 let explorerWatchTimer = null;
+let isWallpaperAttached = false;
 
 function attachWallpaper() {
   if (!desktopWin || desktopWin.isDestroyed() || !wallpaperApi) return;
@@ -238,6 +239,7 @@ function _doAttach() {
     attachTries = 0;
     attachBusy  = false;
     attachTimer = null;
+    isWallpaperAttached = true;
     console.log('[DexPad] Wallpaper panel attached to desktop.');
   } catch (err) {
     if (attachTries < ATTACH_MAX) {
@@ -249,6 +251,7 @@ function _doAttach() {
       attachTries = 0;
       attachBusy  = false;
       attachTimer = null;
+      isWallpaperAttached = false;
       // Graceful fallback: disable wallpaper mode, open normal panel
       store.set('wallpaperMode', false);
       destroyDesktopWindow();
@@ -311,6 +314,7 @@ function destroyDesktopWindow() {
   }
   attachBusy  = false;
   attachTries = 0;
+  isWallpaperAttached = false;
   if (!desktopWin || desktopWin.isDestroyed()) return;
   if (wallpaperApi) {
     try { wallpaperApi.detachFromDesktop(desktopWin); } catch (_) { /* best effort */ }
@@ -336,8 +340,10 @@ function startExplorerWatch() {
   explorerWatchTimer = setInterval(() => {
     if (quitting || !store.get('wallpaperMode')) return;
     if (desktopWin && !desktopWin.isDestroyed() && wallpaperApi) {
-      if (!wallpaperApi.isWindowAttached(desktopWin)) {
+      // note: only trigger re-attach if it WAS previously attached and isn't currently mid-attach
+      if (isWallpaperAttached && !attachBusy && !wallpaperApi.isWindowAttached(desktopWin)) {
         console.warn('[DexPad] Desktop attachment lost (Explorer restarted). Re-attaching…');
+        isWallpaperAttached = false;
         attachWallpaper();
       }
     }

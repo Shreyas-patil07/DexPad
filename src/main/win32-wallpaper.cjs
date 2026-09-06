@@ -22,6 +22,9 @@ const GetWindowRect = user32.func('__stdcall', 'GetWindowRect', 'int32', ['void 
 const ShowWindow = user32.func('__stdcall', 'ShowWindow', 'int32', ['void *', 'int32']);
 const SetLayeredWindowAttributes = user32.func('__stdcall', 'SetLayeredWindowAttributes', 'int32', ['void *', 'uint32', 'uint8', 'uint32']);
 
+const OpenDesktopA = user32.func('__stdcall', 'OpenDesktopA', 'void *', ['string', 'uint32', 'bool', 'uint32']);
+const SetThreadDesktop = user32.func('__stdcall', 'SetThreadDesktop', 'bool', ['void *']);
+
 const EnumWindowsCallback = koffi.proto('__stdcall', 'EnumWindowsCallback', 'int32', ['void *', 'intptr_t']);
 const EnumWindows = user32.func('__stdcall', 'EnumWindows', 'int32', [koffi.pointer(EnumWindowsCallback), 'intptr_t']);
 
@@ -85,8 +88,25 @@ function spawnWorkerW(progman) {
   }
 }
 
+// Switch calling thread to Windows interactive "Default" desktop if launched from a virtual or alternate session
+function ensureDefaultDesktop() {
+  try {
+    const hDesk = OpenDesktopA('Default', 0, false, 0x10000000);
+    if (!isNull(hDesk)) {
+      SetThreadDesktop(hDesk);
+    }
+  } catch (_) {
+    // best-effort fallback
+  }
+}
+
 function findWorkerW() {
-  const progman = FindWindowW('Progman', null);
+  let progman = FindWindowW('Progman', null);
+  if (isNull(progman)) {
+    // If not found on current thread desktop, switch thread to "Default" interactive desktop
+    ensureDefaultDesktop();
+    progman = FindWindowW('Progman', null);
+  }
   if (isNull(progman)) throw new Error('Progman not found — is Explorer running?');
 
   spawnWorkerW(progman);
