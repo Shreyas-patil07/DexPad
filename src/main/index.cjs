@@ -106,6 +106,16 @@ function createProfile(name) {
   const p = {id:profileId(),name:clean,cards:[],connections:[]};
   profiles.push(p); activeProfileId=p.id; persistProfiles(); publishState(); return currentState();
 }
+function renameProfile(id, name) {
+  const p = profiles.find(profile => profile.id === id);
+  if (!p) throw new Error('Profile not found.');
+  const clean = typeof name === 'string' ? name.trim().slice(0,80) : '';
+  if (!clean) throw new Error('Profile name cannot be empty.');
+  p.name = clean;
+  persistProfiles();
+  publishState();
+  return currentState();
+}
 function showControlWindow(){
   if(workspaceWin&&!workspaceWin.isDestroyed()){if(!workspaceWin.isVisible())workspaceWin.show();workspaceWin.focus();return workspaceWin;}
   return createControlWindow();
@@ -153,6 +163,7 @@ ipcMain.on('dexpad:save-workspace-sync',(event,payload)=>{try{saveWorkspaceSync(
 ipcMain.handle('dexpad:get-profiles',()=>({profiles:profileSummary(),activeProfileId}));
 ipcMain.handle('dexpad:switch-profile',(_,id)=>switchProfile(id));
 ipcMain.handle('dexpad:create-profile',(_,name)=>createProfile(name));
+ipcMain.handle('dexpad:rename-profile',(_,id,name)=>renameProfile(id,name));
 ipcMain.handle('dexpad:set-startup',(_,enabled)=>{if(typeof enabled==='boolean'){applyStartup(enabled);publishState();}return currentState();});
 ipcMain.handle('dexpad:set-wallpaper-mode',(_,enabled)=>{if(typeof enabled==='boolean')setWallpaperMode(enabled);return currentState();});
 ipcMain.handle('dexpad:set-state',(_,state)=>{if(typeof state?.startup==='boolean')applyStartup(state.startup);if(typeof state?.wallpaperMode==='boolean')setWallpaperMode(state.wallpaperMode);return currentState();});
