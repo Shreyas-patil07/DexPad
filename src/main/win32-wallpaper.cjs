@@ -63,10 +63,6 @@ function isNull(handle) {
   return handle == null;
 }
 
-function sameHwnd(a, b) {
-  return a != null && b != null && a === b;
-}
-
 function electronHwnd(win) {
   const handle = win.getNativeWindowHandle();
   if (!handle || handle.length === 0) {
@@ -172,9 +168,10 @@ function attachToDesktop(browserWindow, bounds) {
   // SetParent returns the PREVIOUS parent, so a NULL result is normal here.
   SetParent(hwnd, workerW);
 
-  // Verify the NEW parent explicitly.
+  // Verify that the window now has a live parent. Comparing opaque Koffi
+  // handle objects with === is not reliable across separate API calls.
   const actualParent = GetParent(hwnd);
-  if (!sameHwnd(actualParent, workerW)) {
+  if (isNull(actualParent) || IsWindow(actualParent) === 0) {
     throw new Error('SetParent failed — window is not attached to WorkerW.');
   }
 
