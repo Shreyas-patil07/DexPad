@@ -4,6 +4,20 @@
   const tabs = document.getElementById('profile-tabs');
   if (!tabs || !window.dexpad) return;
 
+  async function renameProfile(profile) {
+    const next = prompt('Rename profile', profile.name);
+    if (next === null) return;
+    const name = next.trim();
+    if (!name) return;
+    if (name === profile.name) return;
+    try {
+      await window.dexpad.renameProfile(profile.id, name);
+    } catch (err) {
+      console.error('[DexPad] Profile rename failed:', err);
+      alert(err?.message || 'Unable to rename profile.');
+    }
+  }
+
   function render(state) {
     if (!Array.isArray(state?.profiles)) return;
     tabs.replaceChildren();
@@ -12,7 +26,7 @@
       button.type = 'button';
       button.className = 'profile-tab';
       button.textContent = profile.name;
-      button.title = `Switch to ${profile.name}`;
+      button.title = `Switch to ${profile.name} · Double-click or right-click to rename`;
       button.dataset.profileId = profile.id;
       button.classList.toggle('active', profile.id === state.activeProfileId);
       button.addEventListener('click', async () => {
@@ -24,6 +38,16 @@
         } catch (err) {
           console.error('[DexPad] Profile switch failed:', err);
         }
+      });
+      button.addEventListener('dblclick', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameProfile(profile);
+      });
+      button.addEventListener('contextmenu', e => {
+        e.preventDefault();
+        e.stopPropagation();
+        renameProfile(profile);
       });
       tabs.appendChild(button);
     });
