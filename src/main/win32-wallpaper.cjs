@@ -16,7 +16,7 @@ const FindWindowExW = user32.func('__stdcall', 'FindWindowExW', HWND, [HWND, HWN
 const SendMessageTimeoutW = user32.func('__stdcall', 'SendMessageTimeoutW', 'intptr_t', [HWND, 'uint32', 'uintptr_t', 'intptr_t', 'uint32', 'uint32', 'void *']);
 const SetParent = user32.func('__stdcall', 'SetParent', HWND, [HWND, HWND]);
 const GetParent = user32.func('__stdcall', 'GetParent', HWND, [HWND]);
-const IsWindow = user32.func('__stdcall', 'IsWindow', HWND, []);
+const IsWindow = user32.func('__stdcall', 'IsWindow', 'int32', [HWND]);
 const GetClassNameW = user32.func('__stdcall', 'GetClassNameW', 'int32', [HWND, 'void *', 'int32']);
 const SetWindowLongPtrW = user32.func('__stdcall', 'SetWindowLongPtrW', 'intptr_t', [HWND, 'int32', 'intptr_t']);
 const GetWindowLongPtrW = user32.func('__stdcall', 'GetWindowLongPtrW', 'intptr_t', [HWND, 'int32']);
@@ -76,7 +76,7 @@ function findChildByClass(parent, childAfter, classNameValue) {
 }
 
 function spawnWorkerW(progman) {
-  // 0x052C is the documented Explorer trick used by desktop-widget/wallpaper
+  // 0x052C is the Explorer message used by desktop-widget/wallpaper
   // implementations to ask Progman to create the WorkerW desktop layer.
   const probes = [[0x0D, 0x01], [0x0D, 0x00], [0x00, 0x00]];
   for (const [wParam, lParam] of probes) {
@@ -115,7 +115,7 @@ function findWorkerW() {
 
   // Some Explorer builds produce an extra WorkerW after the shell owner only
   // after the Progman message has settled. Re-enumerate top-level windows as a
-  // narrow fallback and select the first visible WorkerW without SHELLDLL_DefView.
+  // narrow fallback and select the first WorkerW without SHELLDLL_DefView.
   const candidates = [];
   const cb2 = koffi.register((hwnd) => {
     if (className(hwnd) !== 'WorkerW') return 1;
